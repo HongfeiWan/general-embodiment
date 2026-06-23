@@ -29,6 +29,8 @@ DEFAULT_OUTPUT_DIR = MISSION_DIR / "config_relative_action_curves"
 ACTION_EEF_SLICE = slice(0, 9)
 ACTION_HAND_SLICE = slice(9, 19)
 STATE_ARM_SLICE = slice(0, 7)
+STATE_EEF_SLICE = slice(7, 16)
+STATE_HAND_SLICE = slice(16, 26)
 HORIZONS = (1, 2, 4, 8, 16, 32)
 CURVE_HORIZONS = (1, 8, 16, 32)
 
@@ -111,25 +113,42 @@ def read_episode(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
     return action[:, ACTION_EEF_SLICE], action[:, ACTION_HAND_SLICE], state[:, STATE_ARM_SLICE], timestamps
 
 
+def read_episode_full_state(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    df = pd.read_parquet(path)
+    action = stack_vector_column(df["action"], "action")
+    state = stack_vector_column(df["observation.state"], "observation.state")
+    timestamps = df["timestamp"].to_numpy(dtype=np.float64)
+    return (
+        action[:, ACTION_EEF_SLICE],
+        action[:, ACTION_HAND_SLICE],
+        state[:, STATE_ARM_SLICE],
+        state[:, STATE_EEF_SLICE],
+        state[:, STATE_HAND_SLICE],
+        timestamps,
+    )
+
+
 def rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
     values = np.asarray(rot6d, dtype=np.float64).reshape(-1, 6)
-    first_col = values[:, 0:3]
-    second_col = values[:, 3:6]
-    b1 = first_col / np.maximum(np.linalg.norm(first_col, axis=1, keepdims=True), 1e-12)
-    second_orthogonal = second_col - np.sum(b1 * second_col, axis=1, keepdims=True) * b1
-    b2 = second_orthogonal / np.maximum(
+    first_row = values[:, 0:3]
+    second_row = values[:, 3:6]
+    r1 = first_row / np.maximum(np.linalg.norm(first_row, axis=1, keepdims=True), 1e-12)
+    second_orthogonal = second_row - np.sum(r1 * second_row, axis=1, keepdims=True) * r1
+    r2 = second_orthogonal / np.maximum(
         np.linalg.norm(second_orthogonal, axis=1, keepdims=True), 1e-12
     )
-    b3 = np.cross(b1, b2)
+    r3 = np.cross(r1, r2)
     matrices = np.empty((values.shape[0], 3, 3), dtype=np.float64)
-    matrices[:, :, 0] = b1
-    matrices[:, :, 1] = b2
-    matrices[:, :, 2] = b3
+    matrices[:, 0, :] = r1
+    matrices[:, 1, :] = r2
+    matrices[:, 2, :] = r3
     return matrices
 
 
 def matrix_to_rot6d(matrices: np.ndarray) -> np.ndarray:
-    return np.concatenate([matrices[:, :, 0], matrices[:, :, 1]], axis=1)
+    return np.concatenate([matrices[:, 0, :], matrices[:, 1, :]], axis=1)
 
 
 def relative_eef(action_eef: np.ndarray, horizon: int) -> np.ndarray:
@@ -164,6 +183,45 @@ def relative_groups(
         "eef_9d": relative_eef(action_eef, horizon),
         "hand_joint_target": action_hand[horizon:] - action_hand[:-horizon],
         "arm_joint_target": state_arm[horizon:] - state_arm[:-horizon],
+    }
+
+
+def groot_relative_eef(state_eef: np.ndarray, action_eef: np.ndarray) -> np.ndarray:
+    n = min(state_eef.shape[0], action_eef.shape[0])
+    if n <= 0:
+        return np.zeros((0, 9), dtype=np.float64)
+    ref_pos = np.asarray(state_eef[:n, :3], dtype=np.float64)
+    target_pos = np.asarray(action_eef[:n, :3], dtype=np.float64)
+    ref_rot = rot6d_to_matrix(state_eef[:n, 3:9])
+    target_rot = rot6d_to_matrix(action_eef[:n, 3:9])
+    ref_inv = np.transpose(ref_rot, (0, 2, 1))
+    relative_pos = np.einsum("nij,nj->ni", ref_inv, target_pos - ref_pos)
+    relative_rot = np.einsum("nij,njk->nik", ref_inv, target_rot)
+    return np.concatenate([relative_pos, matrix_to_rot6d(relative_rot)], axis=1)
+
+
+def groot_relative_groups(
+    action_eef: np.ndarray,
+    action_hand: np.ndarray,
+    state_arm: np.ndarray,
+    state_eef: np.ndarray,
+    state_hand: np.ndarray,
+    delta: int,
+) -> dict[str, np.ndarray]:
+    n = min(
+        action_eef.shape[0],
+        action_hand.shape[0],
+        state_arm.shape[0],
+        state_eef.shape[0],
+        state_hand.shape[0],
+    ) - delta
+    if n <= 0:
+        empty = np.zeros((0, 0), dtype=np.float64)
+        return {"eef_9d": empty, "hand_joint_target": empty, "arm_joint_target": empty}
+    return {
+        "eef_9d": groot_relative_eef(state_eef[:n], action_eef[delta : delta + n]),
+        "hand_joint_target": action_hand[delta : delta + n] - state_hand[:n],
+        "arm_joint_target": state_arm[delta : delta + n] - state_arm[:n],
     }
 
 

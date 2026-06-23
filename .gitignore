@@ -1,5 +1,7 @@
 # Local mission data copies are large test artifacts.
 missions/*/*/raw/*/*/
+missions/*/*/raw/*/*.md
+missions/*/*/raw/*/*.json
 missions/*/*/lerobot_v2/*/*/
 missions/*/*/trimmed/data/
 missions/*/*/trimmed/videos/
@@ -7,6 +9,7 @@ missions/*/*/trimmed_by_date/
 missions/*/*/smooth/data/
 missions/*/*/smooth/videos/
 missions/*/*/smooth_by_date/
+missions/*/*/smooth_quality/
 missions/*/*/prepared_smooth_by_date/
 
 __pycache__/

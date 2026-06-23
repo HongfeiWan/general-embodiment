@@ -100,7 +100,7 @@ def _named_joint_values(payload: object, order: tuple[str, ...]) -> list[float]:
     if len(joint_names) != len(joint_positions):
         return []
     by_name: dict[str, float] = {}
-    for name, position in zip(joint_names, joint_positions, strict=True):
+    for name, position in zip(joint_names, joint_positions):
         if not isinstance(position, (int, float)):
             return []
         by_name[str(name)] = float(position)
@@ -479,6 +479,36 @@ def _iter_video_payloads(record: dict[str, object]) -> list[dict[str, object]]:
     if not isinstance(videos, list):
         return []
     return [video for video in videos if isinstance(video, dict)]
+
+
+def _stream_records_for_key(
+    *,
+    episode_dir: Path,
+    frames: list[dict[str, object]],
+    key: str,
+    filename: str,
+) -> list[dict[str, object]]:
+    embedded = [frame for frame in frames if isinstance(frame.get(key), dict)]
+    if embedded:
+        return embedded
+    stream_path = episode_dir / filename
+    if not stream_path.is_file():
+        return []
+    records = []
+    for record in _load_jsonl(stream_path):
+        if not isinstance(record, dict):
+            continue
+        wrapped = {
+            key: record,
+            "monotonic_ts_s": record.get("monotonic_ts_s"),
+            "source_ts_s": record.get("source_ts_s"),
+            "capture_ts_s": record.get("capture_ts_s"),
+        }
+        frame_id = record.get("frame_id")
+        if isinstance(frame_id, int):
+            wrapped["teleop_frame_id"] = frame_id
+        records.append(wrapped)
+    return records
 
 
 def _video_ordinal_maps(
@@ -934,8 +964,18 @@ class GrootLeRobotV2Exporter:
         video_log_path = episode_dir / "video.jsonl"
         video_log_records = _load_jsonl(video_log_path) if video_log_path.is_file() else []
         video_ordinal_maps = _video_ordinal_maps(video_log_records or frames, video_cameras)
-        action_records = [frame for frame in frames if isinstance(frame.get("action"), dict)]
-        robot_records = [frame for frame in frames if isinstance(frame.get("robot"), dict)]
+        action_records = _stream_records_for_key(
+            episode_dir=episode_dir,
+            frames=frames,
+            key="action",
+            filename="actions.jsonl",
+        )
+        robot_records = _stream_records_for_key(
+            episode_dir=episode_dir,
+            frames=frames,
+            key="robot",
+            filename="robot.jsonl",
+        )
         video_records = [
             frame
             for frame in frames
@@ -1446,7 +1486,7 @@ class GrootLeRobotV2Exporter:
                 raise RuntimeError("--video-alias count must match --camera count when exporting multiple cameras.")
             if len(set(aliases)) != len(aliases):
                 raise RuntimeError(f"Video aliases must be unique: {aliases!r}")
-            return dict(zip(cameras, aliases, strict=True))
+            return dict(zip(cameras, aliases))
 
         aliases_by_camera: dict[str, str] = {}
         for camera in cameras:
@@ -1472,7 +1512,7 @@ class GrootLeRobotV2Exporter:
                 raise RuntimeError("--video-feature-key count must match --camera count when exporting multiple cameras.")
             if len(set(feature_keys)) != len(feature_keys):
                 raise RuntimeError(f"Video feature keys must be unique: {feature_keys!r}")
-            return dict(zip(cameras, feature_keys, strict=True))
+            return dict(zip(cameras, feature_keys))
 
         return {
             camera: (

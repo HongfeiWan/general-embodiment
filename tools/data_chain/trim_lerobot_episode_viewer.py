@@ -68,8 +68,9 @@ def _cache_data(**kwargs):
     return decorator
 
 
-DEFAULT_DATASET_ROOT = REPO_ROOT / "missions" / "nero" / "mission2" / "lerobot_v2"
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "missions"
+DEFAULT_MISSION_DIR = REPO_ROOT / "missions" / "nero" / "mission2"
+DEFAULT_DATASET_ROOT = DEFAULT_MISSION_DIR / "lerobot_v2"
+DEFAULT_OUTPUT_ROOT = DEFAULT_MISSION_DIR
 DEFAULT_OUTPUT_DATASET_NAME = "trimmed"
 TRIM_MANIFEST_FILENAME = "trim_manifest.jsonl"
 REQUIRED_VIDEO_KEYS = ("ego_view", "wrist_view")
@@ -106,14 +107,15 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_ROOT,
         help=(
-            "Root directory for routed trimmed datasets. The app writes to "
-            "<output-root>/<hardware>/<mission>/trimmed by default."
+            "Mission directory that receives the trimmed dataset. By default the app "
+            "writes to missions/nero/mission2/trimmed. If a broader missions root "
+            "is provided, the app writes to <output-root>/<hardware>/<mission>/trimmed."
         ),
     )
     parser.add_argument(
         "--output-dataset-name",
         default=DEFAULT_OUTPUT_DATASET_NAME,
-        help="Leaf dataset directory name under <output-root>/<hardware>/<mission>.",
+        help="Leaf dataset directory name, trimmed by default.",
     )
     parser.add_argument(
         "--codec",
@@ -211,13 +213,12 @@ def _infer_source_routing(source_dataset: Path) -> DatasetRouting:
     hardware: str | None = None
     mission: str | None = None
     try:
-        rel_parts = source_dataset.resolve().relative_to(DEFAULT_DATASET_ROOT.resolve()).parts
+        rel_parts = source_dataset.resolve().relative_to(DEFAULT_MISSION_DIR.resolve()).parts
     except ValueError:
         rel_parts = ()
-    if rel_parts:
-        hardware = rel_parts[0]
-        if len(rel_parts) > 1 and rel_parts[1].startswith("mission"):
-            mission = rel_parts[1]
+    if rel_parts and rel_parts[0] == "lerobot_v2":
+        mission = DEFAULT_MISSION_DIR.name
+        hardware = DEFAULT_MISSION_DIR.parent.name
 
     if mission is None:
         for part in source_dataset.parts:
@@ -260,6 +261,8 @@ def _routed_output_dataset(
     routing: DatasetRouting,
     output_dataset_name: str,
 ) -> Path:
+    if re.fullmatch(r"mission\d*", output_root.name):
+        return output_root / _safe_path_component(output_dataset_name, DEFAULT_OUTPUT_DATASET_NAME)
     return (
         output_root
         / _safe_path_component(routing.hardware, "unknown_hardware")
@@ -272,6 +275,139 @@ def _append_jsonl_row(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _source_dataset_date(source_dataset: Path) -> str | None:
+    for part in source_dataset.parts:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
+            return part
+    match = re.search(r"(20\d{6})", source_dataset.name)
+    if match:
+        value = match.group(1)
+        return f"{value[:4]}-{value[4:6]}-{value[6:8]}"
+    return None
+
+
+def _compact_date_to_iso(value: str) -> str:
+    return f"{value[:4]}-{value[4:6]}-{value[6:8]}"
+
+
+def _episode_source_date(row: dict[str, Any]) -> str | None:
+    metadata = row.get("teleop_stack_metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    candidates = [
+        metadata.get("raw_episode_id"),
+        metadata.get("raw_episode_dir"),
+        metadata.get("source_dataset"),
+        metadata.get("source_dataset_name"),
+        metadata.get("trimmed_at_utc"),
+    ]
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        match = re.search(r"(20\d{6})", value)
+        if match:
+            return _compact_date_to_iso(match.group(1))
+        if re.match(r"\d{4}-\d{2}-\d{2}", value):
+            return value[:10]
+    return None
+
+
+def _replace_file_link(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or destination.exists():
+        if destination.resolve() == source.resolve():
+            return
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.symlink_to(source.resolve())
+
+
+def _replace_dataset_dir(path: Path) -> None:
+    if path.is_symlink() or path.exists():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _update_date_view_info(date_dataset: Path, rows: list[dict[str, Any]]) -> None:
+    info_path = date_dataset / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    info = _read_json(info_path)
+    total_episodes = len(rows)
+    total_frames = sum(int(row.get("length", 0)) for row in rows)
+    num_video_keys = len(_read_json(date_dataset / "meta" / "modality.json").get("video", {}))
+    chunk_size = int(info.get("chunks_size", 1000))
+    episode_indices = [int(row["episode_index"]) for row in rows]
+
+    info["total_episodes"] = total_episodes
+    info["total_frames"] = total_frames
+    info["total_videos"] = total_episodes * num_video_keys
+    info["total_chunks"] = len({idx // chunk_size for idx in episode_indices}) if rows else 0
+    if rows and episode_indices == list(range(min(episode_indices), max(episode_indices) + 1)):
+        info["splits"] = {"train": f"{min(episode_indices)}:{max(episode_indices) + 1}"}
+    else:
+        info["splits"] = {"train": f"0:{total_episodes}"}
+    info["teleop_stack_date_view"] = {
+        "source_dataset": str((date_dataset.parents[2] / date_dataset.name).resolve()),
+        "date": date_dataset.parent.name,
+        "episode_indices": episode_indices,
+        "index_semantics": "canonical_episode_index",
+    }
+    _write_json(info_path, info)
+
+
+def _build_trimmed_date_view(output_dataset: Path, date: str) -> None:
+    date_dataset = output_dataset.parent / "trimmed_by_date" / date / output_dataset.name
+    episodes = [
+        row
+        for row in _read_jsonl(output_dataset / "meta" / "episodes.jsonl")
+        if _episode_source_date(row) == date
+    ]
+    manifest_rows = [
+        row
+        for row in _read_jsonl(output_dataset / TRIM_MANIFEST_FILENAME)
+        if int(row.get("output_episode_index", -1))
+        in {int(ep["episode_index"]) for ep in episodes}
+    ]
+
+    _replace_dataset_dir(date_dataset)
+    shutil.copytree(output_dataset / "meta", date_dataset / "meta", symlinks=True)
+    _write_jsonl(date_dataset / "meta" / "episodes.jsonl", episodes)
+    _write_jsonl(date_dataset / TRIM_MANIFEST_FILENAME, manifest_rows)
+    _write_jsonl(date_dataset / "meta" / TRIM_MANIFEST_FILENAME, manifest_rows)
+
+    for episode in episodes:
+        metadata = episode.get("teleop_stack_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        data_path = metadata.get("data_path")
+        if isinstance(data_path, str):
+            _replace_file_link(output_dataset / data_path, date_dataset / data_path)
+        video_paths = metadata.get("video_paths")
+        if isinstance(video_paths, dict):
+            for value in video_paths.values():
+                if isinstance(value, str):
+                    _replace_file_link(output_dataset / value, date_dataset / value)
+        else:
+            video_path = metadata.get("video_path")
+            if isinstance(video_path, str):
+                _replace_file_link(output_dataset / video_path, date_dataset / video_path)
+
+    _update_date_view_info(date_dataset, episodes)
+
+
+def _refresh_trimmed_date_index(output_dataset: Path, source_dataset: Path) -> None:
+    date = _source_dataset_date(source_dataset)
+    if date is None:
+        return
+    _build_trimmed_date_view(output_dataset, date)
 
 
 def _resolve_episode_paths(dataset_dir: Path, episode_index: int, video_key: str) -> EpisodePaths:
@@ -690,6 +826,7 @@ def _append_trimmed_episode(
     }
     _append_jsonl_row(output_dataset / TRIM_MANIFEST_FILENAME, manifest_row)
     _append_jsonl_row(output_dataset / "meta" / TRIM_MANIFEST_FILENAME, manifest_row)
+    _refresh_trimmed_date_index(output_dataset, source_dataset)
     result["manifest_path"] = str(output_dataset / TRIM_MANIFEST_FILENAME)
     return result
 

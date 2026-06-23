@@ -86,25 +86,26 @@ def _smooth_scalar_channels(
 
 
 def _rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
-    first_col = rot6d[:, 0:3]
-    second_col = rot6d[:, 3:6]
+    values = np.asarray(rot6d, dtype=np.float64).reshape(-1, 6)
+    first_row = values[:, 0:3]
+    second_row = values[:, 3:6]
 
-    b1 = first_col / np.maximum(np.linalg.norm(first_col, axis=1, keepdims=True), 1e-12)
-    second_orthogonal = second_col - np.sum(b1 * second_col, axis=1, keepdims=True) * b1
-    b2 = second_orthogonal / np.maximum(
+    r1 = first_row / np.maximum(np.linalg.norm(first_row, axis=1, keepdims=True), 1e-12)
+    second_orthogonal = second_row - np.sum(r1 * second_row, axis=1, keepdims=True) * r1
+    r2 = second_orthogonal / np.maximum(
         np.linalg.norm(second_orthogonal, axis=1, keepdims=True), 1e-12
     )
-    b3 = np.cross(b1, b2)
+    r3 = np.cross(r1, r2)
 
-    matrices = np.empty((rot6d.shape[0], 3, 3), dtype=np.float64)
-    matrices[:, :, 0] = b1
-    matrices[:, :, 1] = b2
-    matrices[:, :, 2] = b3
+    matrices = np.empty((values.shape[0], 3, 3), dtype=np.float64)
+    matrices[:, 0, :] = r1
+    matrices[:, 1, :] = r2
+    matrices[:, 2, :] = r3
     return matrices
 
 
 def _matrix_to_rot6d(matrices: np.ndarray) -> np.ndarray:
-    return np.concatenate([matrices[:, :, 0], matrices[:, :, 1]], axis=1)
+    return np.concatenate([matrices[:, 0, :], matrices[:, 1, :]], axis=1)
 
 
 def _smooth_rot6d(

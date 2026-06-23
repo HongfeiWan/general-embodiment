@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -108,6 +109,160 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _read_json(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _compact_date_to_iso(value: str) -> str:
+    return f"{value[:4]}-{value[4:6]}-{value[6:8]}"
+
+
+def _episode_source_date(row: dict[str, object]) -> str | None:
+    metadata = row.get("teleop_stack_metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    candidates = [
+        metadata.get("raw_episode_id"),
+        metadata.get("raw_episode_dir"),
+        metadata.get("source_dataset"),
+        metadata.get("source_dataset_name"),
+        metadata.get("trimmed_at_utc"),
+        row.get("created_at_utc"),
+        row.get("smoothed_at_utc"),
+    ]
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        match = re.search(r"(20\d{6})", value)
+        if match:
+            return _compact_date_to_iso(match.group(1))
+        if re.match(r"\d{4}-\d{2}-\d{2}", value):
+            return value[:10]
+    return None
+
+
+def _replace_file_link(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or destination.exists():
+        if destination.resolve() == source.resolve():
+            return
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.symlink_to(source.resolve())
+
+
+def _replace_dataset_dir(path: Path) -> None:
+    if path.is_symlink() or path.exists():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _copy_meta_with_filtered_episodes(source: Path, destination: Path, rows: list[dict[str, object]]) -> None:
+    shutil.copytree(source / "meta", destination / "meta", symlinks=True)
+    _write_jsonl(destination / "meta" / "episodes.jsonl", rows)
+
+    info_path = destination / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    info = _read_json(info_path)
+    if not isinstance(info, dict):
+        return
+    total_episodes = len(rows)
+    total_frames = sum(int(row.get("length", 0)) for row in rows)
+    modality = _read_json(destination / "meta" / "modality.json")
+    num_video_keys = len(modality.get("video", {})) if isinstance(modality, dict) else 0
+    chunk_size = int(info.get("chunks_size", 1000))
+    episode_indices = [int(row["episode_index"]) for row in rows]
+
+    info["total_episodes"] = total_episodes
+    info["total_frames"] = total_frames
+    info["total_videos"] = total_episodes * num_video_keys
+    info["total_chunks"] = len({idx // chunk_size for idx in episode_indices}) if rows else 0
+    if rows and episode_indices == list(range(min(episode_indices), max(episode_indices) + 1)):
+        info["splits"] = {"train": f"{min(episode_indices)}:{max(episode_indices) + 1}"}
+    else:
+        info["splits"] = {"train": f"0:{total_episodes}"}
+    info["teleop_stack_date_view"] = {
+        "source_dataset": str(source.resolve()),
+        "date": destination.parent.name,
+        "episode_indices": episode_indices,
+        "index_semantics": "canonical_episode_index",
+    }
+    _write_json(info_path, info)
+
+
+def _link_episode_payload(source: Path, destination: Path, rows: list[dict[str, object]]) -> None:
+    for row in rows:
+        metadata = row.get("teleop_stack_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        data_path = metadata.get("data_path")
+        if isinstance(data_path, str):
+            _replace_file_link(source / data_path, destination / data_path)
+        video_paths = metadata.get("video_paths")
+        if isinstance(video_paths, dict):
+            for value in video_paths.values():
+                if isinstance(value, str):
+                    _replace_file_link(source / value, destination / value)
+        else:
+            video_path = metadata.get("video_path")
+            if isinstance(video_path, str):
+                _replace_file_link(source / video_path, destination / video_path)
+
+
+def _trim_manifest_episode_index(row: dict[str, object]) -> int | None:
+    for key in ("output_episode_index", "smooth_episode_index", "episode_index"):
+        if key in row:
+            return int(row[key])
+    return None
+
+
+def _build_dataset_date_views(source: Path, date_root: Path, dataset_name: str) -> None:
+    episodes_path = source / "meta" / "episodes.jsonl"
+    if not episodes_path.exists():
+        return
+    episodes = _read_jsonl(episodes_path)
+    by_date: dict[str, list[dict[str, object]]] = {}
+    for row in episodes:
+        date = _episode_source_date(row)
+        if date:
+            by_date.setdefault(date, []).append(row)
+
+    manifest_rows = _read_jsonl(source / "trim_manifest.jsonl")
+    if not manifest_rows:
+        manifest_rows = _read_jsonl(source / "meta" / "trim_manifest.jsonl")
+
+    if date_root.exists() and not date_root.is_symlink():
+        for child in date_root.iterdir():
+            if child.is_dir() or child.is_symlink():
+                shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+
+    for date, rows in sorted(by_date.items()):
+        destination = date_root / date / dataset_name
+        _replace_dataset_dir(destination)
+        _copy_meta_with_filtered_episodes(source, destination, rows)
+        episode_indices = {int(row["episode_index"]) for row in rows}
+        filtered_manifest = [
+            row
+            for row in manifest_rows
+            if (_trim_manifest_episode_index(row) in episode_indices)
+        ]
+        if filtered_manifest:
+            _write_jsonl(destination / "trim_manifest.jsonl", filtered_manifest)
+            _write_jsonl(destination / "meta" / "trim_manifest.jsonl", filtered_manifest)
+        _link_episode_payload(source, destination, rows)
+
+
 def _write_manifest(mission_dir: Path, items: list[LinkedItem]) -> None:
     new_rows = [
         {
@@ -181,8 +336,7 @@ def _link_trimmed(trimmed_dataset: Path, mission_dir: Path, *, mode: str) -> lis
     date, created_at = _date_dir_for(trimmed_dataset)
     destination = mission_dir / "trimmed"
     _replace_link_or_copy(trimmed_dataset, destination, mode=mode)
-    date_index = mission_dir / "trimmed_by_date" / date / trimmed_dataset.name
-    _replace_link_or_copy(destination, date_index, mode="symlink")
+    _build_dataset_date_views(destination, mission_dir / "trimmed_by_date", destination.name)
     return [
         LinkedItem(
             item_type="trimmed",
@@ -210,8 +364,7 @@ def _link_named_dataset(
     date, created_at = _date_dir_for(source)
     destination = mission_dir / destination_name
     _replace_link_or_copy(source, destination, mode=mode)
-    date_index = mission_dir / date_index_name / date / source.name
-    _replace_link_or_copy(destination, date_index, mode="symlink")
+    _build_dataset_date_views(destination, mission_dir / date_index_name, destination.name)
     return [
         LinkedItem(
             item_type=item_type,
