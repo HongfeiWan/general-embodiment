@@ -1,0 +1,13 @@
+# Python dependencies for the data capture and processing toolchain.
+# Install with: python3 -m pip install -r requirement.txt
+#
+# System dependency required for video export/transcoding:
+#   ffmpeg with libx264 support, available on PATH.
+
+numpy
+pandas
+pyarrow
+scipy
+matplotlib
+opencv-python
+streamlit
