@@ -10,6 +10,7 @@ missions/*/*/smooth/data/
 missions/*/*/smooth/videos/
 missions/*/*/smooth_by_date/
 missions/*/*/smooth_quality/
+missions/*/*/batch_quality/
 missions/*/*/prepared_smooth_by_date/
 
 __pycache__/
