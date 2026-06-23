@@ -14,13 +14,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    plt = None
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +85,16 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def dataset_output_label(dataset_dir: Path) -> str:
+    parts = dataset_dir.parts
+    for index, part in enumerate(parts):
+        if part.endswith("_by_date") and index + 2 < len(parts):
+            return f"{part}_{parts[index + 1]}_{parts[index + 2]}"
+    if len(parts) >= 2:
+        return "_".join(parts[-2:])
+    return dataset_dir.name
 
 
 def compact_date_to_iso(value: str) -> str:
@@ -558,7 +571,7 @@ def check_meta(dataset_dir: Path, info: dict[str, Any], rows: list[dict[str, Any
 
 
 def plot_episode_metrics(episode_metrics: pd.DataFrame, out_path: Path) -> None:
-    if episode_metrics.empty:
+    if plt is None or episode_metrics.empty:
         return
     x = episode_metrics["episode_index"].to_numpy()
     fig, axes = plt.subplots(3, 1, figsize=(14, 10.5), sharex=True, constrained_layout=True)
@@ -659,10 +672,10 @@ def check_batch(
 ) -> dict[str, Any]:
     if batch_date is None:
         selected_rows = list(all_rows)
-        batch_name = "all"
+        batch_name = f"{dataset_output_label(dataset_dir)}_all"
     else:
         selected_rows = [row for row in all_rows if row_matches_date(row, batch_date, date_field)]
-        batch_name = f"{date_field}_{batch_date}"
+        batch_name = f"{dataset_output_label(dataset_dir)}_{date_field}_{batch_date}"
     if not selected_rows:
         raise RuntimeError(f"No episodes matched batch {batch_name!r}")
 
