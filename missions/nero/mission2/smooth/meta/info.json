@@ -1,0 +1,243 @@
+{
+  "chunks_size": 1000,
+  "codebase_version": "teleop_stack.groot_lerobot_v2.v1",
+  "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+  "features": {
+    "action": {
+      "dtype": "float32",
+      "names": [
+        "arm_eef_pos_target.x",
+        "arm_eef_pos_target.y",
+        "arm_eef_pos_target.z",
+        "arm_eef_rot6d_target.r00",
+        "arm_eef_rot6d_target.r10",
+        "arm_eef_rot6d_target.r20",
+        "arm_eef_rot6d_target.r01",
+        "arm_eef_rot6d_target.r11",
+        "arm_eef_rot6d_target.r21",
+        "hand_joint_target.thumb_cmc_pitch",
+        "hand_joint_target.thumb_cmc_yaw",
+        "hand_joint_target.index_mcp_pitch",
+        "hand_joint_target.middle_mcp_pitch",
+        "hand_joint_target.ring_mcp_pitch",
+        "hand_joint_target.pinky_mcp_pitch",
+        "hand_joint_target.index_mcp_roll",
+        "hand_joint_target.ring_mcp_roll",
+        "hand_joint_target.pinky_mcp_roll",
+        "hand_joint_target.thumb_cmc_roll"
+      ],
+      "shape": [
+        19
+      ]
+    },
+    "annotation.human.action.task_description": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "annotation.human.validity": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "next.done": {
+      "dtype": "bool",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "next.reward": {
+      "dtype": "float32",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "observation.images.ego_view": {
+      "dtype": "video",
+      "info": {
+        "has_audio": false,
+        "video.channels": 3,
+        "video.codec": "h264",
+        "video.fps": 10,
+        "video.height": 800,
+        "video.is_depth_map": false,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 1280
+      },
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "shape": [
+        800,
+        1280,
+        3
+      ]
+    },
+    "observation.images.wrist_view": {
+      "dtype": "video",
+      "info": {
+        "has_audio": false,
+        "video.channels": 3,
+        "video.codec": "h264",
+        "video.fps": 10,
+        "video.height": 480,
+        "video.is_depth_map": false,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 640
+      },
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "shape": [
+        480,
+        640,
+        3
+      ]
+    },
+    "observation.state": {
+      "dtype": "float32",
+      "names": [
+        "arm_joint_pos.0",
+        "arm_joint_pos.1",
+        "arm_joint_pos.2",
+        "arm_joint_pos.3",
+        "arm_joint_pos.4",
+        "arm_joint_pos.5",
+        "arm_joint_pos.6",
+        "arm_eef_pos.x",
+        "arm_eef_pos.y",
+        "arm_eef_pos.z",
+        "arm_eef_rot6d.r00",
+        "arm_eef_rot6d.r10",
+        "arm_eef_rot6d.r20",
+        "arm_eef_rot6d.r01",
+        "arm_eef_rot6d.r11",
+        "arm_eef_rot6d.r21",
+        "hand_joint_pos.thumb_cmc_pitch",
+        "hand_joint_pos.thumb_cmc_yaw",
+        "hand_joint_pos.index_mcp_pitch",
+        "hand_joint_pos.middle_mcp_pitch",
+        "hand_joint_pos.ring_mcp_pitch",
+        "hand_joint_pos.pinky_mcp_pitch",
+        "hand_joint_pos.index_mcp_roll",
+        "hand_joint_pos.ring_mcp_roll",
+        "hand_joint_pos.pinky_mcp_roll",
+        "hand_joint_pos.thumb_cmc_roll"
+      ],
+      "shape": [
+        26
+      ]
+    },
+    "task_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "names": null,
+      "shape": [
+        1
+      ]
+    }
+  },
+  "fps": 10,
+  "robot_type": "nero_single_linker_l10.v1",
+  "splits": {
+    "train": "0:37"
+  },
+  "teleop_stack": {
+    "action_dim": 19,
+    "action_source": "safe_action",
+    "arm_action_semantics": "absolute_wrist_pose_xyz_rot6d_target",
+    "arm_frame": "rokae_base",
+    "format_name": "groot_lerobot_v2",
+    "hand_action_semantics": "absolute_l10_joint_target",
+    "hand_joint_order": [
+      "thumb_cmc_pitch",
+      "thumb_cmc_yaw",
+      "index_mcp_pitch",
+      "middle_mcp_pitch",
+      "ring_mcp_pitch",
+      "pinky_mcp_pitch",
+      "index_mcp_roll",
+      "ring_mcp_roll",
+      "pinky_mcp_roll",
+      "thumb_cmc_roll"
+    ],
+    "hand_state_semantics": "linkerhand_sdk_get_state_reported",
+    "raw_capture_dir": "/home/whf/Project/Isaac-GR00T/demo_data/l10_hand/nero/mission2/data_capture/raw",
+    "require_robot_state": true,
+    "schema": "rokae_xmate3_linker_l10_groot_v1_1_full_orientation",
+    "selected_camera": "realsense_head",
+    "selected_cameras": [
+      "realsense_head",
+      "wrist_d405_rgb"
+    ],
+    "state_dim": 26,
+    "video_alias": "ego_view",
+    "video_aliases": {
+      "realsense_head": "ego_view",
+      "wrist_d405_rgb": "wrist_view"
+    },
+    "video_feature_key": "observation.images.ego_view",
+    "video_feature_keys": {
+      "realsense_head": "observation.images.ego_view",
+      "wrist_d405_rgb": "observation.images.wrist_view"
+    },
+    "smooth_source_dataset": "/home/whf/Project/Isaac-GR00T/outputs/IsaacLab/nero/mission2/trimmed",
+    "smooth_excluded_trimmed_episode_indices": [
+      10,
+      19,
+      32
+    ],
+    "smoothed_at_utc": "2026-06-22T09:18:27.162948+00:00",
+    "smoothing": {
+      "hampel_window": 5,
+      "hampel_threshold_sigma": 3.0,
+      "savgol_window": 7,
+      "savgol_polyorder": 2,
+      "action_dim": 19,
+      "smoothed_column": "action"
+    }
+  },
+  "total_chunks": 1,
+  "total_episodes": 37,
+  "total_frames": 10926,
+  "total_tasks": 3,
+  "total_videos": 74,
+  "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+}

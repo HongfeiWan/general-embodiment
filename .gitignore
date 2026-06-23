@@ -1,0 +1,13 @@
+# Local mission data copies are large test artifacts.
+missions/*/*/raw/*/*/
+missions/*/*/lerobot_v2/*/*/
+missions/*/*/trimmed/data/
+missions/*/*/trimmed/videos/
+missions/*/*/trimmed_by_date/
+missions/*/*/smooth/data/
+missions/*/*/smooth/videos/
+missions/*/*/smooth_by_date/
+missions/*/*/prepared_smooth_by_date/
+
+__pycache__/
+*.py[cod]
