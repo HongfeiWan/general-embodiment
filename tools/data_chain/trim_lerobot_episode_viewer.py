@@ -68,8 +68,7 @@ def _cache_data(**kwargs):
     return decorator
 
 
-DEFAULT_DATASET = REPO_ROOT / "missions" / "nero" / "mission2" / "lerobot_v2"
-DEFAULT_DATASET_ROOT = REPO_ROOT / "missions"
+DEFAULT_DATASET_ROOT = REPO_ROOT / "missions" / "nero" / "mission2" / "lerobot_v2"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "missions"
 DEFAULT_OUTPUT_DATASET_NAME = "trimmed"
 TRIM_MANIFEST_FILENAME = "trim_manifest.jsonl"
@@ -96,10 +95,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-dir",
         type=Path,
-        default=DEFAULT_DATASET_ROOT if DEFAULT_DATASET_ROOT.exists() else DEFAULT_DATASET,
+        default=DEFAULT_DATASET_ROOT,
         help=(
-            "Source LeRobot dataset directory, or a parent directory containing multiple "
-            "LeRobot capture datasets."
+            "Source LeRobot v2 root. The app only reads datasets under date folders "
+            "inside this directory."
         ),
     )
     parser.add_argument(
@@ -149,32 +148,25 @@ def _is_lerobot_dataset(path: Path) -> bool:
     return (path / "meta" / "info.json").exists()
 
 
-def _discover_source_datasets(dataset_dir: Path) -> list[Path]:
-    if _is_lerobot_dataset(dataset_dir):
-        return [dataset_dir]
-    if not dataset_dir.exists():
+def _discover_date_dirs(lerobot_root: Path) -> list[Path]:
+    if not lerobot_root.exists():
         return []
-    discovered: set[Path] = set()
-    pending = [dataset_dir]
-    visited: set[Path] = set()
-    while pending:
-        current = pending.pop()
-        try:
-            resolved = current.resolve()
-        except OSError:
+    return sorted(
+        child
+        for child in lerobot_root.iterdir()
+        if child.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", child.name)
+    )
+
+
+def _discover_source_datasets(lerobot_root: Path, selected_dates: set[str]) -> list[Path]:
+    datasets: list[Path] = []
+    for date_dir in _discover_date_dirs(lerobot_root):
+        if date_dir.name not in selected_dates:
             continue
-        if resolved in visited:
-            continue
-        visited.add(resolved)
-        if _is_lerobot_dataset(current):
-            discovered.add(current)
-            continue
-        try:
-            children = list(current.iterdir())
-        except OSError:
-            continue
-        pending.extend(child for child in children if child.is_dir())
-    return sorted(discovered)
+        for child in sorted(date_dir.iterdir()):
+            if child.is_dir() and _is_lerobot_dataset(child):
+                datasets.append(child)
+    return datasets
 
 
 def _format_dataset_label(path: Path, root: Path) -> str:
@@ -732,7 +724,7 @@ def main() -> None:
 
     with st.sidebar:
         dataset_root = Path(
-            st.text_input("Dataset directory", value=str(args.dataset_dir.expanduser()))
+            st.text_input("LeRobot v2 root", value=str(args.dataset_dir.expanduser()))
         ).expanduser()
         output_root = Path(
             st.text_input("Output root", value=str(args.output_root.expanduser()))
@@ -742,9 +734,28 @@ def main() -> None:
             value=_safe_path_component(args.output_dataset_name, DEFAULT_OUTPUT_DATASET_NAME),
             help="The routed dataset path is <output-root>/<hardware>/<mission>/<name>.",
         )
-        source_datasets = _discover_source_datasets(dataset_root)
+        date_dirs = _discover_date_dirs(dataset_root)
+        if not date_dirs:
+            st.error(
+                "No dated LeRobot v2 folders found. Expected "
+                "<lerobot_v2_root>/<YYYY-MM-DD>/<dataset>/meta/info.json."
+            )
+            st.stop()
+
+        selected_dates: set[str] = set()
+        st.caption("Capture dates")
+        date_columns = st.columns(min(3, len(date_dirs)))
+        for index, date_dir in enumerate(date_dirs):
+            with date_columns[index % len(date_columns)]:
+                if st.checkbox(date_dir.name, value=True, key=f"date::{date_dir.name}"):
+                    selected_dates.add(date_dir.name)
+        if not selected_dates:
+            st.error("Select at least one capture date.")
+            st.stop()
+
+        source_datasets = _discover_source_datasets(dataset_root, selected_dates)
         if not source_datasets:
-            st.error("No LeRobot dataset found. Expected meta/info.json here or below this directory.")
+            st.error("No LeRobot v2 dataset found for the selected dates.")
             st.stop()
         if len(source_datasets) == 1:
             dataset_dir = source_datasets[0]

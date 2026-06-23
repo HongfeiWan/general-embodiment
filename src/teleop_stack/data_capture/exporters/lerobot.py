@@ -621,6 +621,9 @@ class GrootLeRobotV2Exporter:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
             raise RuntimeError("ffmpeg is required to build GR00T-compatible LeRobot v2 videos.")
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe is None:
+            raise RuntimeError("ffprobe is required to validate exported LeRobot v2 mp4 videos.")
 
         meta_dir = output_dir / "meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
@@ -714,6 +717,7 @@ class GrootLeRobotV2Exporter:
             for camera_name, camera_video_path in video_paths_by_camera.items():
                 self._encode_video(
                     ffmpeg=ffmpeg,
+                    ffprobe=ffprobe,
                     episode=episode,
                     output_path=camera_video_path,
                     camera_name=camera_name,
@@ -1233,6 +1237,7 @@ class GrootLeRobotV2Exporter:
         self,
         *,
         ffmpeg: str,
+        ffprobe: str,
         episode: NormalizedEpisode,
         output_path: Path,
         camera_name: str | None = None,
@@ -1255,6 +1260,7 @@ class GrootLeRobotV2Exporter:
                 raise RuntimeError(f"Video frame ordinals must be non-decreasing for camera {camera_key!r}.")
             self._encode_video_by_ordinals(
                 ffmpeg=ffmpeg,
+                ffprobe=ffprobe,
                 input_video_path=unique_video_paths[0],
                 output_path=output_path,
                 frame_ordinals=ordinal_values,
@@ -1275,6 +1281,9 @@ class GrootLeRobotV2Exporter:
             input_pattern = str(tmp_dir / f"%06d{suffix}")
             command = [
                 ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
                 "-y",
                 "-framerate",
                 str(max(1, int(self.config.fps))),
@@ -1282,18 +1291,65 @@ class GrootLeRobotV2Exporter:
                 input_pattern,
                 "-frames:v",
                 str(len(episode.steps)),
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
+                *self._browser_mp4_output_args(),
                 str(output_path),
             ]
             subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self._validate_browser_mp4(ffprobe=ffprobe, video_path=output_path)
+
+    def _browser_mp4_output_args(self) -> list[str]:
+        return [
+            "-an",
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "baseline",
+            "-level",
+            "3.1",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+        ]
+
+    def _validate_browser_mp4(self, *, ffprobe: str, video_path: Path) -> None:
+        command = [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,pix_fmt",
+            "-of",
+            "json",
+            str(video_path),
+        ]
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        payload = json.loads(result.stdout.decode("utf-8"))
+        streams = payload.get("streams")
+        if not isinstance(streams, list) or not streams:
+            raise RuntimeError(f"Exported video has no video stream: {video_path}")
+        stream = streams[0]
+        codec_name = stream.get("codec_name")
+        pix_fmt = stream.get("pix_fmt")
+        if codec_name != "h264" or pix_fmt != "yuv420p":
+            raise RuntimeError(
+                "Exported video is not browser-safe H.264/yuv420p mp4: "
+                f"{video_path} codec={codec_name!r} pix_fmt={pix_fmt!r}"
+            )
 
     def _encode_video_by_ordinals(
         self,
         *,
         ffmpeg: str,
+        ffprobe: str,
         input_video_path: Path,
         output_path: Path,
         frame_ordinals: list[int],
@@ -1321,13 +1377,9 @@ class GrootLeRobotV2Exporter:
             str(max(1, int(self.config.fps))),
             "-i",
             "pipe:0",
-            "-an",
             "-frames:v",
             str(len(frame_ordinals)),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
+            *self._browser_mp4_output_args(),
             str(output_path),
         ]
         with tempfile.TemporaryFile() as stderr:
@@ -1367,6 +1419,7 @@ class GrootLeRobotV2Exporter:
                 stderr.seek(0)
                 error_text = stderr.read().decode("utf-8", errors="replace")
                 raise RuntimeError(f"ffmpeg failed while encoding {output_path}: {error_text}")
+        self._validate_browser_mp4(ffprobe=ffprobe, video_path=output_path)
 
     def _load_session_metadata(self, raw_capture_dir: Path) -> dict[str, object]:
         session_path = raw_capture_dir / "session.json"
