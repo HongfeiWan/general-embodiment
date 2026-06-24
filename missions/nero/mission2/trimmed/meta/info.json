@@ -177,7 +177,7 @@
   "fps": 10,
   "robot_type": "nero_single_linker_l10.v1",
   "splits": {
-    "train": "0:65"
+    "train": "0:101"
   },
   "teleop_stack": {
     "action_dim": 19,
@@ -220,9 +220,9 @@
     }
   },
   "total_chunks": 1,
-  "total_episodes": 65,
-  "total_frames": 18083,
+  "total_episodes": 101,
+  "total_frames": 25351,
   "total_tasks": 3,
-  "total_videos": 130,
+  "total_videos": 202,
   "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 }
