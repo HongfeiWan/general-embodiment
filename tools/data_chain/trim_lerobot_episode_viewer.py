@@ -1021,10 +1021,10 @@ def main() -> None:
         st.subheader("Exact Synchronized Frame")
         col_prev, col_slider, col_next = st.columns([0.12, 0.76, 0.12])
         with col_prev:
-            if st.button("<", use_container_width=True):
+            if st.button("<", width="stretch"):
                 st.session_state.frame_index = max(0, int(st.session_state.frame_index) - 1)
         with col_next:
-            if st.button(">", use_container_width=True):
+            if st.button(">", width="stretch"):
                 st.session_state.frame_index = min(frame_count - 1, int(st.session_state.frame_index) + 1)
         with col_slider:
             st.session_state.frame_index = st.slider(
@@ -1043,7 +1043,7 @@ def main() -> None:
                     int(st.session_state.frame_index),
                 )
                 st.caption(video_key)
-                st.image(frame, channels="RGB", use_container_width=True)
+                st.image(frame, channels="RGB", width="stretch")
 
         row = df.iloc[int(st.session_state.frame_index)]
         st.write(
@@ -1075,12 +1075,12 @@ def main() -> None:
     st.subheader("Trim Range")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        if st.button("Set Start = Current Frame", use_container_width=True):
+        if st.button("Set Start = Current Frame", width="stretch"):
             st.session_state.trim_start = int(st.session_state.frame_index)
             if st.session_state.trim_start > st.session_state.trim_end:
                 st.session_state.trim_end = st.session_state.trim_start
     with c2:
-        if st.button("Set End = Current Frame", use_container_width=True):
+        if st.button("Set End = Current Frame", width="stretch"):
             st.session_state.trim_end = int(st.session_state.frame_index)
             if st.session_state.trim_end < st.session_state.trim_start:
                 st.session_state.trim_start = st.session_state.trim_end
@@ -1107,7 +1107,7 @@ def main() -> None:
 
     export_col, preview_col = st.columns([0.25, 0.75])
     with export_col:
-        if st.button("Export Trimmed Episode", type="primary", use_container_width=True):
+        if st.button("Export Trimmed Episode", type="primary", width="stretch"):
             with st.spinner("Writing trimmed parquet and mp4..."):
                 result = _append_trimmed_episode(
                     source_dataset=dataset_dir,
