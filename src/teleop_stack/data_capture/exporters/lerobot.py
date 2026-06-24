@@ -568,6 +568,45 @@ def _episode_validity_label(success: bool | None) -> str | None:
     return None
 
 
+def _add_l10_groot_modality_aliases(
+    *,
+    state_slices: dict[str, dict[str, int]],
+    action_slices: dict[str, dict[str, object]],
+) -> None:
+    arm_eef_pos = state_slices.get("arm_eef_pos")
+    arm_eef_rot6d = state_slices.get("arm_eef_rot6d")
+    if arm_eef_pos and arm_eef_rot6d:
+        state_slices.setdefault(
+            "eef_9d",
+            {
+                "start": int(arm_eef_pos["start"]),
+                "end": int(arm_eef_rot6d["end"]),
+            },
+        )
+
+    arm_eef_pos_target = action_slices.get("arm_eef_pos_target")
+    arm_eef_rot6d_target = action_slices.get("arm_eef_rot6d_target")
+    if arm_eef_pos_target and arm_eef_rot6d_target:
+        action_slices.setdefault(
+            "eef_9d",
+            {
+                "start": int(arm_eef_pos_target["start"]),
+                "end": int(arm_eef_rot6d_target["end"]),
+            },
+        )
+
+    arm_joint_pos = state_slices.get("arm_joint_pos")
+    if arm_joint_pos:
+        action_slices.setdefault(
+            "arm_joint_target",
+            {
+                "start": int(arm_joint_pos["start"]),
+                "end": int(arm_joint_pos["end"]),
+                "original_key": "observation.state",
+            },
+        )
+
+
 @dataclass(frozen=True)
 class GrootLeRobotV2ExporterConfig:
     selected_camera: str = "realsense_head"
@@ -660,6 +699,10 @@ class GrootLeRobotV2Exporter:
 
         session_metadata = self._load_session_metadata(raw_capture_dir)
         tasks: dict[str, int] = {}
+        for episode in normalized:
+            tasks.setdefault(episode.task, len(tasks))
+        for validity_label in ("valid", "invalid"):
+            tasks.setdefault(validity_label, len(tasks))
         episodes_jsonl: list[dict[str, object]] = []
         total_steps = 0
         global_index = 0
@@ -786,9 +829,14 @@ class GrootLeRobotV2Exporter:
             )
 
         state_names = dataset_state_names or []
-        state_slices = dataset_state_slices or {}
+        state_slices = dict(dataset_state_slices or {})
         action_names = dataset_action_names or []
-        action_slices = dataset_action_slices or {}
+        action_slices = dict(dataset_action_slices or {})
+        if self.config.schema == ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA:
+            _add_l10_groot_modality_aliases(
+                state_slices=state_slices,
+                action_slices=action_slices,
+            )
         total_videos = len(normalized) * len(video_cameras)
         video_feature_specs = {}
         for camera_name, feature_key in video_feature_key_by_camera.items():
