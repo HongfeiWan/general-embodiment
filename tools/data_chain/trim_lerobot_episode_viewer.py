@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import inspect
 import json
 from pathlib import Path
 import re
@@ -66,6 +67,33 @@ def _cache_data(**kwargs):
         return func
 
     return decorator
+
+
+def _container_button(label: str, **kwargs) -> bool:
+    try:
+        parameters = inspect.signature(st.button).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "width" in parameters:
+        return bool(st.button(label, width="stretch", **kwargs))
+    if "use_container_width" in parameters:
+        return bool(st.button(label, use_container_width=True, **kwargs))
+    return bool(st.button(label, **kwargs))
+
+
+def _container_image(image: Any, **kwargs) -> None:
+    try:
+        parameters = inspect.signature(st.image).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "use_container_width" in parameters:
+        st.image(image, use_container_width=True, **kwargs)
+    elif "use_column_width" in parameters:
+        st.image(image, use_column_width=True, **kwargs)
+    elif "width" in parameters:
+        st.image(image, width="stretch", **kwargs)
+    else:
+        st.image(image, **kwargs)
 
 
 DEFAULT_MISSION_DIR = REPO_ROOT / "missions" / "nero" / "mission2"
@@ -1021,10 +1049,10 @@ def main() -> None:
         st.subheader("Exact Synchronized Frame")
         col_prev, col_slider, col_next = st.columns([0.12, 0.76, 0.12])
         with col_prev:
-            if st.button("<", width="stretch"):
+            if _container_button("<"):
                 st.session_state.frame_index = max(0, int(st.session_state.frame_index) - 1)
         with col_next:
-            if st.button(">", width="stretch"):
+            if _container_button(">"):
                 st.session_state.frame_index = min(frame_count - 1, int(st.session_state.frame_index) + 1)
         with col_slider:
             st.session_state.frame_index = st.slider(
@@ -1043,7 +1071,7 @@ def main() -> None:
                     int(st.session_state.frame_index),
                 )
                 st.caption(video_key)
-                st.image(frame, channels="RGB", width="stretch")
+                _container_image(frame, channels="RGB")
 
         row = df.iloc[int(st.session_state.frame_index)]
         st.write(
@@ -1075,12 +1103,12 @@ def main() -> None:
     st.subheader("Trim Range")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        if st.button("Set Start = Current Frame", width="stretch"):
+        if _container_button("Set Start = Current Frame"):
             st.session_state.trim_start = int(st.session_state.frame_index)
             if st.session_state.trim_start > st.session_state.trim_end:
                 st.session_state.trim_end = st.session_state.trim_start
     with c2:
-        if st.button("Set End = Current Frame", width="stretch"):
+        if _container_button("Set End = Current Frame"):
             st.session_state.trim_end = int(st.session_state.frame_index)
             if st.session_state.trim_end < st.session_state.trim_start:
                 st.session_state.trim_start = st.session_state.trim_end
@@ -1107,7 +1135,7 @@ def main() -> None:
 
     export_col, preview_col = st.columns([0.25, 0.75])
     with export_col:
-        if st.button("Export Trimmed Episode", type="primary", width="stretch"):
+        if _container_button("Export Trimmed Episode", type="primary"):
             with st.spinner("Writing trimmed parquet and mp4..."):
                 result = _append_trimmed_episode(
                     source_dataset=dataset_dir,
