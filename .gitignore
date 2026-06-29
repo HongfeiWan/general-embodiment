@@ -1,17 +1,17 @@
-# Local mission data copies are large test artifacts.
-missions/*/*/raw/*/*/
-missions/*/*/raw/*/*.md
-missions/*/*/raw/*/*.json
-missions/*/*/lerobot_v2/*/*/
-missions/*/*/trimmed/data/
-missions/*/*/trimmed/videos/
+# Local mission data copies, manifests, metadata, and generated reports are
+# batch-specific artifacts. Keep mission docs in Git, but leave data local.
+missions/*/*/manifest.jsonl
+missions/*/*/*_summary.json
+missions/*/*/raw/
+missions/*/*/lerobot_v2/
+missions/*/*/trimmed/
 missions/*/*/trimmed_by_date/
-missions/*/*/smooth/data/
-missions/*/*/smooth/videos/
+missions/*/*/smooth/
 missions/*/*/smooth_by_date/
+missions/*/*/prepared_smooth/
+missions/*/*/prepared_smooth_by_date/
 missions/*/*/smooth_quality/
 missions/*/*/batch_quality/
-missions/*/*/prepared_smooth_by_date/
 
 __pycache__/
 *.py[cod]
