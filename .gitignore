@@ -10,6 +10,7 @@ missions/*/*/smooth/
 missions/*/*/smooth_by_date/
 missions/*/*/prepared_smooth/
 missions/*/*/prepared_smooth_by_date/
+missions/*/*/quality/
 missions/*/*/smooth_quality/
 missions/*/*/batch_quality/
 
