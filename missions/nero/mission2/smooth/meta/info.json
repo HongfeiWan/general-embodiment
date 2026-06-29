@@ -177,7 +177,7 @@
   "fps": 10,
   "robot_type": "nero_single_linker_l10.v1",
   "splits": {
-    "train": "0:37"
+    "train": "0:104"
   },
   "teleop_stack": {
     "action_dim": 19,
@@ -217,27 +217,12 @@
     "video_feature_keys": {
       "realsense_head": "observation.images.ego_view",
       "wrist_d405_rgb": "observation.images.wrist_view"
-    },
-    "smooth_source_dataset": "/home/whf/Project/Isaac-GR00T/outputs/IsaacLab/nero/mission2/trimmed",
-    "smooth_excluded_trimmed_episode_indices": [
-      10,
-      19,
-      32
-    ],
-    "smoothed_at_utc": "2026-06-22T09:18:27.162948+00:00",
-    "smoothing": {
-      "hampel_window": 5,
-      "hampel_threshold_sigma": 3.0,
-      "savgol_window": 7,
-      "savgol_polyorder": 2,
-      "action_dim": 19,
-      "smoothed_column": "action"
     }
   },
   "total_chunks": 1,
-  "total_episodes": 37,
-  "total_frames": 10926,
+  "total_episodes": 104,
+  "total_frames": 25953,
   "total_tasks": 3,
-  "total_videos": 74,
+  "total_videos": 208,
   "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 }

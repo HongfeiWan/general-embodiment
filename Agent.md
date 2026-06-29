@@ -194,6 +194,28 @@ python3 tools/data_chain/organize_mission_data.py \
 
 ## Validate Smooth Output
 
+Run the all-date smooth quality gate first. This checks the canonical `smooth/`
+dataset, produces one row per episode and video stream, and colors distribution
+plots by source capture date so cross-date shifts are visible:
+
+```bash
+python3 tools/data_chain/analyze_smooth_quality_all_dates.py \
+  --dataset-dir missions/nero/mission2/smooth \
+  --output-dir missions/nero/mission2/smooth_quality/all_dates
+```
+
+The main report is written to:
+
+```text
+missions/nero/mission2/smooth_quality/all_dates/smooth_quality_all_dates_report.html
+```
+
+Review the gate criteria in:
+
+```text
+docs/embodied_data_quality_standard.md
+```
+
 Analyze smooth data for the target capture date first. By default `--date-field source` matches the capture/source date recovered from smooth provenance, not the date when smoothing was run:
 
 ```bash
@@ -241,6 +263,7 @@ When new raw data arrives:
 3. Use the Streamlit trim viewer to append valid clips into the single flat `missions/nero/mission2/trimmed/` dataset.
 4. Run `smooth_action_commands.py --overwrite` to rebuild `missions/nero/mission2/smooth/`.
 5. Confirm `trimmed_by_date/<YYYY-MM-DD>/trimmed/` contains only that date's accepted clips.
-6. Run `analyze_smooth_by_date.py --date <YYYY-MM-DD> --date-field source` for the new capture date after `smooth/` has been regenerated.
-7. Run the comparison scripts and inspect metrics/plots before treating the smooth dataset as ready.
-8. Refresh `manifest.jsonl` with `organize_mission_data.py` if inventory metadata needs to be current.
+6. Run `analyze_smooth_quality_all_dates.py` and inspect date-colored distribution plots for drift/outliers.
+7. Run `analyze_smooth_by_date.py --date <YYYY-MM-DD> --date-field source` for the new capture date after `smooth/` has been regenerated.
+8. Run the comparison scripts and inspect metrics/plots before treating the smooth dataset as ready.
+9. Refresh `manifest.jsonl` with `organize_mission_data.py` if inventory metadata needs to be current.
