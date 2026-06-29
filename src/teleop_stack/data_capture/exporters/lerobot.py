@@ -616,6 +616,7 @@ class GrootLeRobotV2ExporterConfig:
     video_aliases: tuple[str, ...] | None = None
     video_feature_key: str | None = None
     video_feature_keys: tuple[str, ...] | None = None
+    task: str | None = None
     action_source: str = "safe_action"
     success_only: bool = False
     require_robot_state: bool = True
@@ -665,6 +666,7 @@ class GrootLeRobotV2Exporter:
                 "video_aliases": video_alias_by_camera,
                 "video_feature_key": video_feature_key,
                 "video_feature_keys": video_feature_key_by_camera,
+                "task": self.config.task,
                 "action_source": self.config.action_source,
                 "fps": max(1, int(self.config.fps)),
                 "episodes_per_chunk": max(1, int(self.config.episodes_per_chunk)),
@@ -902,6 +904,7 @@ class GrootLeRobotV2Exporter:
                 "video_aliases": video_alias_by_camera,
                 "video_feature_key": video_feature_key,
                 "video_feature_keys": video_feature_key_by_camera,
+                "task": self.config.task,
                 "action_source": self.config.action_source,
                 "require_robot_state": self.config.require_robot_state,
                 "state_dim": len(state_names),
@@ -1036,7 +1039,7 @@ class GrootLeRobotV2Exporter:
 
         task_instruction = str(metadata.get("task_instruction") or "").strip()
         task_name = str(metadata.get("task_name") or "").strip()
-        task = task_instruction or task_name or "teleop"
+        task = str(self.config.task or "").strip() or task_instruction or task_name or "teleop"
 
         step_payloads: list[dict[str, object]] = []
         missing_robot_state = 0

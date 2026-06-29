@@ -16,6 +16,30 @@ from teleop_stack.data_capture.exporters import (
 )
 
 
+def _mission_task_from_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- Mission:"):
+            task = stripped.split(":", 1)[1].strip()
+            return task or None
+    return None
+
+
+def _find_mission_task(*paths: Path) -> str | None:
+    seen: set[Path] = set()
+    for path in paths:
+        for parent in (path, *path.parents):
+            if parent in seen:
+                continue
+            seen.add(parent)
+            task = _mission_task_from_file(parent / "MISSION.md")
+            if task:
+                return task
+    return None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Export raw captured trials to a GR00T-compatible LeRobot v2 dataset.",
@@ -57,6 +81,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Which raw action field should become exporter action.",
     )
     parser.add_argument(
+        "--task",
+        default=None,
+        help=(
+            "Task label written to meta/tasks.jsonl and episode annotations. "
+            "Defaults to the nearest MISSION.md '- Mission:' value when available."
+        ),
+    )
+    parser.add_argument(
         "--success-only",
         action="store_true",
         help="Export only episodes explicitly marked success=true.",
@@ -91,6 +123,9 @@ def main() -> int:
     selected_cameras = tuple(args.camera or ["realsense_head"])
     video_aliases = tuple(args.video_alias) if args.video_alias is not None else None
     video_feature_keys = tuple(args.video_feature_key) if args.video_feature_key is not None else None
+    raw_capture_dir = args.raw_capture_dir.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve()
+    task = str(args.task or "").strip() or _find_mission_task(output_dir, raw_capture_dir)
     exporter = GrootLeRobotV2Exporter(
         GrootLeRobotV2ExporterConfig(
             selected_camera=selected_cameras[0],
@@ -100,6 +135,7 @@ def main() -> int:
             video_aliases=video_aliases,
             video_feature_key=video_feature_keys[0] if video_feature_keys else None,
             video_feature_keys=video_feature_keys,
+            task=task,
             action_source=args.action_source,
             success_only=bool(args.success_only),
             require_robot_state=not bool(args.allow_missing_robot_state),
@@ -109,8 +145,8 @@ def main() -> int:
         )
     )
     summary = exporter.export_capture(
-        raw_capture_dir=args.raw_capture_dir.expanduser().resolve(),
-        output_dir=args.output_dir.expanduser().resolve(),
+        raw_capture_dir=raw_capture_dir,
+        output_dir=output_dir,
     )
     print(
         "[export-lerobot] "

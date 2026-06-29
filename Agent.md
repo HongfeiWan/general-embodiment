@@ -98,6 +98,11 @@ Choose `<dataset_name>` so it identifies the hardware, mission, and date, for ex
 groot_lerobot_v2_nero_l10_20260622
 ```
 
+The exporter uses the nearest mission `MISSION.md` `- Mission:` value as the
+LeRobot task label by default, so all mission2 batches share the same
+`meta/tasks.jsonl` task. Use `--task "..."` only when an explicit override is
+needed.
+
 Use `--dry-run` first when validating an unfamiliar raw session:
 
 ```bash
