@@ -37,7 +37,7 @@ DEFAULT_DATASET_DIR = MISSION_DIR / "smooth"
 DEFAULT_OUTPUT_DIR = MISSION_DIR / "quality"
 DEFAULT_RAW_ROOT = MISSION_DIR / "raw"
 
-QUALITY_ANALYZER_VERSION = "quality.v1"
+QUALITY_ANALYZER_VERSION = "quality.v3_bad_data_visibility"
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 COMPACT_DATE_RE = re.compile(r"(20\d{6})")
 
@@ -871,6 +871,199 @@ def plot_video_quality(videos: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_bad_episode_summary(episodes: pd.DataFrame, out_path: Path) -> None:
+    if episodes.empty or "quality_score" not in episodes:
+        return
+    by_date = episodes.groupby("source_date").agg(
+        episodes=("episode_index", "count"),
+        bad=("issue_count", lambda values: int((pd.to_numeric(values, errors="coerce") > 0).sum())),
+        mean_score=("quality_score", "mean"),
+    ).reset_index()
+    by_date["bad_ratio"] = by_date["bad"] / by_date["episodes"].replace(0, np.nan)
+    worst = episodes.sort_values(["quality_score", "issue_count"], ascending=[True, False]).head(20)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 9), constrained_layout=True)
+    axes[0].bar(by_date["source_date"].astype(str), by_date["bad_ratio"].fillna(0.0), color="#e45756")
+    axes[0].set_title("Bad episode ratio by source date")
+    axes[0].set_ylabel("ratio")
+    axes[0].set_ylim(0, 1)
+    axes[1].barh(worst["episode_index"].astype(str), worst["quality_score"], color="#f58518")
+    axes[1].invert_yaxis()
+    axes[1].set_title("Worst episodes by quality score")
+    axes[1].set_xlabel("score, lower is worse")
+    for axis in axes:
+        axis.tick_params(axis="x", rotation=30)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_timing_quality(timing: pd.DataFrame, out_path: Path) -> None:
+    if timing.empty:
+        return
+    cols = [
+        ("mean_dt_video_state", "mean dt video-state"),
+        ("std_dt_video_state", "std dt video-state"),
+        ("max_abs_time_offset", "max abs time offset"),
+        ("action_state_lag", "action-state lag frames"),
+        ("camera_frame_jitter", "camera frame jitter"),
+    ]
+    present = [(col, title) for col, title in cols if col in timing]
+    if not present:
+        return
+    fig, axes = plt.subplots(len(present), 1, figsize=(14, 3.3 * len(present)), constrained_layout=True)
+    if len(present) == 1:
+        axes = [axes]
+    dates = sorted(timing["source_date"].astype(str).unique()) if "source_date" in timing else ["all"]
+    for axis, (col, title) in zip(axes, present):
+        data = [timing.loc[timing["source_date"].astype(str) == date, col].dropna().to_numpy() for date in dates]
+        axis.boxplot(data, **{MATPLOTLIB_BOXPLOT_LABEL_KEY: dates}, showfliers=False)
+        axis.set_title(title)
+        axis.tick_params(axis="x", rotation=30)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_hand_quality(episodes: pd.DataFrame, out_path: Path) -> None:
+    if episodes.empty:
+        return
+    cols = [
+        ("finger_angle_mean", "finger angle mean"),
+        ("finger_angle_std", "finger angle std"),
+        ("finger_velocity_p95", "finger velocity p95"),
+        ("finger_acceleration_p95", "finger acceleration p95"),
+        ("zero_ratio", "zero ratio"),
+        ("saturation_ratio", "saturation ratio"),
+        ("closing_duration", "closing duration"),
+        ("holding_stability", "holding stability"),
+    ]
+    present = [(col, title) for col, title in cols if col in episodes]
+    if not present:
+        return
+    rows = math.ceil(len(present) / 2)
+    fig, axes = plt.subplots(rows, 2, figsize=(16, 4 * rows), constrained_layout=True)
+    axes_flat = np.asarray(axes).reshape(-1)
+    dates = sorted(episodes["source_date"].astype(str).unique())
+    for axis, (col, title) in zip(axes_flat, present):
+        data = [episodes.loc[episodes["source_date"].astype(str) == date, col].dropna().to_numpy() for date in dates]
+        axis.boxplot(data, **{MATPLOTLIB_BOXPLOT_LABEL_KEY: dates}, showfliers=False)
+        axis.set_title(title)
+        axis.tick_params(axis="x", rotation=30)
+    for axis in axes_flat[len(present):]:
+        axis.axis("off")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_cross_modal_relations(episodes: pd.DataFrame, videos: pd.DataFrame, timing: pd.DataFrame, out_path: Path) -> None:
+    if episodes.empty:
+        return
+    video_summary = videos.groupby("episode_index").mean(numeric_only=True).reset_index() if not videos.empty else pd.DataFrame()
+    merged = episodes.merge(video_summary, on="episode_index", how="left", suffixes=("", "_video")) if not video_summary.empty else episodes.copy()
+    if not timing.empty:
+        merged = merged.merge(timing[[c for c in ["episode_index", "action_state_lag", "max_abs_time_offset"] if c in timing]], on="episode_index", how="left", suffixes=("", "_timing"))
+    specs = [
+        ("finger_velocity_p95", "frame_difference", "finger velocity vs frame difference"),
+        ("finger_velocity_p95", "optical_flow_magnitude", "finger velocity vs optical flow"),
+        ("eef_state_velocity_l2_p95", "optical_flow_magnitude", "EEF velocity vs optical flow"),
+        ("action_step_l2_p95", "action_state_lag", "action jump vs estimated lag"),
+    ]
+    present = [(x, y, title) for x, y, title in specs if x in merged and y in merged]
+    if not present:
+        return
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
+    axes_flat = np.asarray(axes).reshape(-1)
+    for axis, (x, y, title) in zip(axes_flat, present):
+        for date, group in merged.groupby("source_date"):
+            axis.scatter(group[x], group[y], s=24, alpha=0.75, label=str(date))
+        axis.set_xlabel(x)
+        axis.set_ylabel(y)
+        axis.set_title(title)
+    if present:
+        axes_flat[0].legend(fontsize=8)
+    for axis in axes_flat[len(present):]:
+        axis.axis("off")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_issue_codes(issues: pd.DataFrame, out_path: Path) -> None:
+    if issues.empty or "code" not in issues:
+        return
+    counts = issues["code"].value_counts().head(20)
+    fig, axis = plt.subplots(figsize=(12, max(4, 0.35 * len(counts))), constrained_layout=True)
+    axis.barh(counts.index.astype(str), counts.to_numpy(), color="#e45756")
+    axis.invert_yaxis()
+    axis.set_title("Most common quality issue codes")
+    axis.set_xlabel("count")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_issue_heatmap(issues: pd.DataFrame, out_path: Path) -> None:
+    if issues.empty or not {"source_date", "code"}.issubset(issues.columns):
+        return
+    pivot = pd.crosstab(issues["code"].astype(str), issues["source_date"].astype(str))
+    if pivot.empty:
+        return
+    pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index[:24]]
+    fig, axis = plt.subplots(figsize=(max(9, 1.0 * len(pivot.columns) + 5), max(5, 0.35 * len(pivot.index) + 2)), constrained_layout=True)
+    image = axis.imshow(pivot.to_numpy(dtype=float), cmap="YlOrRd", aspect="auto")
+    axis.set_xticks(range(len(pivot.columns)), labels=pivot.columns.astype(str), rotation=30, ha="right")
+    axis.set_yticks(range(len(pivot.index)), labels=pivot.index.astype(str))
+    axis.set_title("Issue heatmap by source date")
+    for y in range(len(pivot.index)):
+        for x in range(len(pivot.columns)):
+            value = int(pivot.iloc[y, x])
+            if value:
+                axis.text(x, y, str(value), ha="center", va="center", fontsize=8, color="#111827")
+    fig.colorbar(image, ax=axis, label="issue count")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_issue_timeline(episodes: pd.DataFrame, issues: pd.DataFrame, out_path: Path) -> None:
+    if episodes.empty or "episode_index" not in episodes:
+        return
+    ordered = episodes.sort_values(["source_date", "episode_index"]).copy()
+    issue_counts = issues.groupby("episode_index").size() if not issues.empty and "episode_index" in issues else pd.Series(dtype=float)
+    error_counts = (
+        issues[issues["severity"] == "error"].groupby("episode_index").size()
+        if not issues.empty and {"episode_index", "severity"}.issubset(issues.columns)
+        else pd.Series(dtype=float)
+    )
+    ordered["plot_issue_count"] = ordered["episode_index"].map(issue_counts).fillna(0).astype(int)
+    ordered["plot_error_count"] = ordered["episode_index"].map(error_counts).fillna(0).astype(int)
+    colors = np.where(ordered["plot_error_count"] > 0, "#d62728", np.where(ordered["plot_issue_count"] > 0, "#f58518", "#54a24b"))
+    fig, axes = plt.subplots(2, 1, figsize=(16, 7), sharex=True, constrained_layout=True)
+    x = np.arange(len(ordered))
+    axes[0].bar(x, ordered["quality_score"].fillna(100.0), color=colors, width=0.9)
+    axes[0].axhline(80, color="#f58518", linestyle="--", linewidth=1)
+    axes[0].axhline(60, color="#d62728", linestyle="--", linewidth=1)
+    axes[0].set_ylim(0, 105)
+    axes[0].set_ylabel("quality score")
+    axes[0].set_title("Episode quality timeline, sorted by date and episode")
+    axes[1].bar(x, ordered["plot_issue_count"], color=colors, width=0.9)
+    axes[1].set_ylabel("issue count")
+    axes[1].set_xlabel("episode")
+    tick_positions: list[int] = []
+    tick_labels: list[str] = []
+    for date, group in ordered.groupby("source_date", sort=False):
+        position = int(group.index.to_series().map({idx: pos for pos, idx in enumerate(ordered.index)}).iloc[0])
+        tick_positions.append(position)
+        tick_labels.append(str(date))
+        for axis in axes:
+            axis.axvline(position - 0.5, color="#d7dde5", linewidth=0.8)
+    axes[1].set_xticks(tick_positions, tick_labels, rotation=30, ha="right")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
 def add_issue(
     issues: list[dict[str, Any]],
     episode_index: int,
@@ -954,6 +1147,10 @@ def build_issue_rows(episodes: pd.DataFrame, videos: pd.DataFrame, timing: pd.Da
                     add_issue(issues, int(row["episode_index"]), str(row.get("source_date", "unknown")), "warning", "unstable_action_state_lag", "episode lag differs strongly from dataset median", "action_state_lag", row.get("action_state_lag"))
 
     if not videos.empty:
+        low_blur_mask = robust_low_outlier_mask(videos["blur_score"]) if "blur_score" in videos else pd.Series(False, index=videos.index)
+        low_brightness_mask = robust_low_outlier_mask(videos["brightness_mean"]) if "brightness_mean" in videos else pd.Series(False, index=videos.index)
+        high_brightness_mask = robust_high_outlier_mask(videos["brightness_mean"]) if "brightness_mean" in videos else pd.Series(False, index=videos.index)
+        high_flow_mask = robust_high_outlier_mask(videos["optical_flow_magnitude"]) if "optical_flow_magnitude" in videos else pd.Series(False, index=videos.index)
         for _, row in videos.iterrows():
             episode_index = int(row.get("episode_index", -1))
             date = str(row.get("source_date", "unknown"))
@@ -963,12 +1160,21 @@ def build_issue_rows(episodes: pd.DataFrame, videos: pd.DataFrame, timing: pd.Da
             blur = row.get("blur_score")
             if isinstance(blur, (int, float)) and math.isfinite(float(blur)) and float(blur) < 20.0:
                 add_issue(issues, episode_index, date, "warning", "low_blur_score", f"{video_key}: image appears blurry", "blur_score", blur)
+            elif row.name in low_blur_mask.index and bool(low_blur_mask.loc[row.name]):
+                add_issue(issues, episode_index, date, "warning", "relative_low_blur", f"{video_key}: blur score is low relative to the dataset", "blur_score", blur)
             bright = row.get("brightness_mean")
             if isinstance(bright, (int, float)) and math.isfinite(float(bright)) and (float(bright) < 25.0 or float(bright) > 230.0):
                 add_issue(issues, episode_index, date, "warning", "bad_brightness", f"{video_key}: brightness is extreme", "brightness_mean", bright)
+            elif row.name in low_brightness_mask.index and bool(low_brightness_mask.loc[row.name]):
+                add_issue(issues, episode_index, date, "warning", "relative_dark_video", f"{video_key}: brightness is low relative to the dataset", "brightness_mean", bright)
+            elif row.name in high_brightness_mask.index and bool(high_brightness_mask.loc[row.name]):
+                add_issue(issues, episode_index, date, "warning", "relative_bright_video", f"{video_key}: brightness is high relative to the dataset", "brightness_mean", bright)
+            flow = row.get("optical_flow_magnitude")
+            if row.name in high_flow_mask.index and bool(high_flow_mask.loc[row.name]):
+                add_issue(issues, episode_index, date, "warning", "relative_high_optical_flow", f"{video_key}: optical flow is high relative to the dataset", "optical_flow_magnitude", flow)
             for metric, code, threshold in (
-                ("overexposure_ratio", "overexposed_video", 0.10),
-                ("underexposure_ratio", "underexposed_video", 0.10),
+                ("overexposure_ratio", "overexposed_video", 0.35),
+                ("underexposure_ratio", "underexposed_video", 0.35),
             ):
                 value = row.get(metric)
                 if isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value) > threshold:
@@ -1119,6 +1325,7 @@ def build_report_payload(
     episodes: pd.DataFrame,
     videos: pd.DataFrame,
     timing: pd.DataFrame,
+    issues: pd.DataFrame,
     embeddings: pd.DataFrame,
     curves: list[dict[str, Any]],
     run_summary: dict[str, Any],
@@ -1129,18 +1336,19 @@ def build_report_payload(
     video_summary = videos.groupby("episode_index").mean(numeric_only=True).reset_index() if not videos.empty else pd.DataFrame()
     if not video_summary.empty:
         merged = merged.merge(video_summary, on="episode_index", how="left", suffixes=("", "_video"))
-    issue_count = 0
-    if "status" in episodes:
-        issue_count += int((episodes["status"] != "ok").sum())
-    if "frame_count_match" in episodes:
-        issue_count += int((episodes["frame_count_match"] == False).sum())  # noqa: E712
-    if "video_frame_count_match" in episodes:
-        issue_count += int((episodes["video_frame_count_match"] == False).sum())  # noqa: E712
+    issue_count = int(len(issues)) if not issues.empty else 0
+    bad_episode_count = int((episodes.get("issue_count", pd.Series(dtype=float)).fillna(0) > 0).sum()) if not episodes.empty else 0
     by_date = episodes.groupby("source_date").agg(
         episodes=("episode_index", "count"),
         frames=("parquet_rows", "sum"),
         mean_length=("parquet_rows", "mean"),
+        bad_episodes=("issue_count", lambda values: int((pd.to_numeric(values, errors="coerce").fillna(0) > 0).sum())),
+        mean_quality_score=("quality_score", "mean"),
     ).reset_index() if not episodes.empty else pd.DataFrame()
+    if not by_date.empty:
+        by_date["bad_ratio"] = by_date["bad_episodes"] / by_date["episodes"].replace(0, np.nan)
+    worst = episodes.sort_values(["quality_score", "issue_count"], ascending=[True, False]).head(30) if not episodes.empty and "quality_score" in episodes else pd.DataFrame()
+    issue_counts = issues["code"].value_counts().rename_axis("code").reset_index(name="count") if not issues.empty and "code" in issues else pd.DataFrame()
     return {
         "dataset_dir": str(dataset_dir),
         "output_dir": str(output_dir),
@@ -1152,10 +1360,15 @@ def build_report_payload(
                 "frames": int(episodes["parquet_rows"].fillna(0).sum()) if "parquet_rows" in episodes else 0,
                 "source_dates": int(episodes["source_date"].nunique()) if "source_date" in episodes else 0,
                 "issues": issue_count,
+                "bad_episodes": bad_episode_count,
+                "bad_episode_ratio": float(bad_episode_count / len(episodes)) if len(episodes) else 0.0,
                 "embedding_status": embedding_status,
             }
         ),
         "date_summary": dataframe_records(by_date),
+        "worst_episodes": dataframe_records(worst),
+        "issue_counts": dataframe_records(issue_counts),
+        "issues": dataframe_records(issues),
         "episodes": dataframe_records(merged),
         "videos": dataframe_records(videos),
         "embeddings": dataframe_records(embeddings),
@@ -1176,14 +1389,21 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
   <meta charset="utf-8">
   <title>Mission Quality Report</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; color: #1f2933; }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; color: #1f2933; background: #fbfcfd; }}
     .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; max-width: 1100px; }}
     .card {{ border: 1px solid #d7dde5; border-radius: 8px; padding: 12px; background: #fff; }}
+    .card.alert {{ border-color: #f2a65a; background: #fff7ed; }}
+    .card.danger {{ border-color: #e45756; background: #fff1f2; }}
     .label {{ color: #667085; font-size: 12px; text-transform: uppercase; }}
     .value {{ font-size: 26px; font-weight: 650; margin-top: 4px; }}
     figure {{ margin: 18px 0; }} img {{ max-width: 100%; border: 1px solid #d7dde5; border-radius: 6px; }}
     table {{ border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 13px; }}
     th, td {{ border-bottom: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; vertical-align: top; }}
+    tr.issue-error td, td.issue-error {{ background: #fff1f2; color: #9f1239; font-weight: 650; }}
+    tr.issue-warning td, td.issue-warning {{ background: #fff7ed; color: #9a3412; }}
+    td.score-bad {{ background: #fff1f2; color: #9f1239; font-weight: 700; }}
+    td.score-warn {{ background: #fff7ed; color: #9a3412; font-weight: 650; }}
+    td.count-bad {{ color: #9f1239; font-weight: 700; }}
     select {{ padding: 6px 8px; min-width: 320px; }}
     pre {{ background: #f6f8fa; padding: 12px; overflow: auto; border-radius: 6px; }}
     .grid {{ display: grid; grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr); gap: 18px; align-items: start; }}
@@ -1194,6 +1414,11 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
   <h1>Mission Quality Report</h1>
   <p>Dataset: <code>{html.escape(str(payload.get('dataset_dir', '')))}</code></p>
   <div id="summary" class="summary"></div>
+  <h2>Bad Data First</h2>
+  <div class="grid">
+    <div><h3>Worst Episodes</h3><div id="worst-episodes"></div></div>
+    <div><h3>Issue Codes</h3><div id="issue-codes"></div></div>
+  </div>
   <h2>Overview Plots</h2>
   {plot_imgs}
   <h2>Date Summary</h2>
@@ -1210,24 +1435,52 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
     const payload = JSON.parse(document.getElementById('payload').textContent);
     const summary = payload.summary || {{}};
     const summaryEl = document.getElementById('summary');
-    for (const key of ['episodes','frames','source_dates','issues','computed','reused','skipped']) {{
-      const div = document.createElement('div'); div.className = 'card';
-      div.innerHTML = `<div class="label">${{key}}</div><div class="value">${{summary[key] ?? 0}}</div>`;
+    for (const key of ['episodes','frames','source_dates','bad_episodes','bad_episode_ratio','issues','computed','reused']) {{
+      const div = document.createElement('div');
+      const value = key === 'bad_episode_ratio' ? ((summary[key] ?? 0) * 100).toFixed(1) + '%' : (summary[key] ?? 0);
+      const numeric = Number(summary[key] ?? 0);
+      div.className = 'card' + ((key === 'bad_episodes' || key === 'issues') && numeric > 0 ? ' alert' : '') + (key === 'bad_episode_ratio' && numeric >= 0.25 ? ' danger' : '');
+      div.innerHTML = `<div class="label">${{key}}</div><div class="value">${{value}}</div>`;
       summaryEl.appendChild(div);
+    }}
+    function esc(value) {{
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
+    }}
+    function cellClass(c, v) {{
+      if (c === 'severity' && v === 'error') return 'issue-error';
+      if (c === 'severity' && v === 'warning') return 'issue-warning';
+      if (c === 'quality_score' && Number(v) < 60) return 'score-bad';
+      if (c === 'quality_score' && Number(v) < 85) return 'score-warn';
+      if ((c === 'issue_count' || c === 'error_count' || c === 'warning_count') && Number(v) > 0) return 'count-bad';
+      return '';
     }}
     function table(rows, cols) {{
       if (!rows || rows.length === 0) return '<p>No rows.</p>';
       cols = cols || Object.keys(rows[0]);
       return '<table><thead><tr>' + cols.map(c => `<th>${{c}}</th>`).join('') + '</tr></thead><tbody>' +
-        rows.map(r => '<tr>' + cols.map(c => `<td>${{r[c] ?? ''}}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+        rows.map(r => '<tr class="' + (r.severity === 'error' ? 'issue-error' : (r.severity === 'warning' ? 'issue-warning' : '')) + '">' +
+          cols.map(c => `<td class="${{cellClass(c, r[c])}}">${{esc(r[c])}}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
     }}
-    document.getElementById('date-summary').innerHTML = table(payload.date_summary, ['source_date','episodes','frames','mean_length']);
-    const episodes = payload.episodes || [];
+    document.getElementById('worst-episodes').innerHTML = table(payload.worst_episodes || [], ['episode_index','source_date','quality_score','issue_count','error_count','warning_count','issue_summary']);
+    document.getElementById('issue-codes').innerHTML = table(payload.issue_counts || [], ['code','count']);
+    document.getElementById('date-summary').innerHTML = table(payload.date_summary, ['source_date','episodes','bad_episodes','bad_ratio','mean_quality_score','frames','mean_length']);
+    const episodes = (payload.episodes || []).slice().sort((a, b) =>
+      (Number(a.quality_score ?? 100) - Number(b.quality_score ?? 100)) ||
+      (Number(b.issue_count ?? 0) - Number(a.issue_count ?? 0)) ||
+      (Number(a.episode_index ?? 0) - Number(b.episode_index ?? 0))
+    );
+    const issuesByEpisode = new Map();
+    (payload.issues || []).forEach(issue => {{
+      const key = Number(issue.episode_index);
+      if (!issuesByEpisode.has(key)) issuesByEpisode.set(key, []);
+      issuesByEpisode.get(key).push(issue);
+    }});
     const curves = new Map((payload.curves || []).map(c => [Number(c.episode_index), c]));
     const select = document.getElementById('episode-select');
     episodes.forEach(ep => {{
       const opt = document.createElement('option'); opt.value = ep.episode_index;
-      opt.textContent = `episode ${{ep.episode_index}} | ${{ep.source_date}} | frames=${{ep.parquet_rows ?? ''}}`;
+      const prefix = Number(ep.issue_count ?? 0) > 0 ? '[BAD] ' : '';
+      opt.textContent = `${{prefix}}episode ${{ep.episode_index}} | score=${{ep.quality_score ?? 100}} | issues=${{ep.issue_count ?? 0}} | ${{ep.source_date}}`;
       select.appendChild(opt);
     }});
     function drawCurve(curve) {{
@@ -1252,8 +1505,9 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
     function showEpisode() {{
       const id = Number(select.value);
       const ep = episodes.find(e => Number(e.episode_index) === id) || {{}};
-      const cols = ['episode_index','source_date','status','parquet_rows','expected_frames','frame_count_match','video_frame_count_match','timing_status','mean_dt_video_state','action_state_lag','camera_frame_jitter','finger_velocity_p95','arm_joint_jerk_l2_p95','blur_score','brightness_mean'];
-      document.getElementById('episode-metrics').innerHTML = table([ep], cols) + '<pre>' + JSON.stringify(ep, null, 2) + '</pre>';
+      const episodeIssues = issuesByEpisode.get(id) || [];
+      const cols = ['episode_index','source_date','quality_score','issue_count','issue_summary','status','parquet_rows','expected_frames','frame_count_match','video_frame_count_match','timing_status','mean_dt_video_state','action_state_lag','camera_frame_jitter','finger_velocity_p95','arm_joint_jerk_l2_p95','blur_score','brightness_mean'];
+      document.getElementById('episode-metrics').innerHTML = '<h4>Issues</h4>' + table(episodeIssues, ['severity','code','message','metric','value']) + '<h4>Metrics</h4>' + table([ep], cols) + '<pre>' + JSON.stringify(ep, null, 2) + '</pre>';
       drawCurve(curves.get(id));
     }}
     select.addEventListener('change', showEpisode); if (episodes.length) showEpisode();
@@ -1354,10 +1608,21 @@ def main() -> int:
             df.sort_values(["episode_index"], inplace=True)
             df.reset_index(drop=True, inplace=True)
 
+    issue_df = build_issue_rows(episode_df, video_df, timing_df)
+    episode_df = apply_quality_scores(episode_df, issue_df)
+
     save_table(episode_df, cache_dir / "episode_metrics.parquet")
     save_table(video_df, cache_dir / "video_metrics.parquet")
     save_table(timing_df, cache_dir / "timing_metrics.parquet")
     save_table(embedding_df, cache_dir / "embedding_metrics.parquet")
+    save_table(issue_df, cache_dir / "issue_rows.parquet")
+    if not episode_df.empty:
+        episode_df.sort_values(["quality_score", "issue_count", "episode_index"], ascending=[True, False, True]).head(100).to_csv(
+            cache_dir / "worst_episodes.csv",
+            index=False,
+        )
+    if not issue_df.empty:
+        issue_df.sort_values(["source_date", "episode_index", "severity", "code"]).to_csv(cache_dir / "issue_rows.csv", index=False)
     write_jsonl(cache_dir / "episode_curves.jsonl", sorted(curves, key=lambda row: int(row.get("episode_index", -1))))
 
     processed_latest = [
@@ -1373,10 +1638,28 @@ def main() -> int:
     write_jsonl(processed_path, sorted(processed_latest, key=lambda row: int(row["episode_index"])))
 
     plot_files: list[str] = []
+    plot_bad_episode_summary(episode_df, plots_dir / "bad_episode_summary.png")
     plot_length_distribution(episode_df, plots_dir / "length_by_date.png")
     plot_metric_boxplots(episode_df, plots_dir / "metric_distributions_by_date.png")
+    plot_timing_quality(timing_df, plots_dir / "timing_quality.png")
+    plot_hand_quality(episode_df, plots_dir / "hand_quality.png")
     plot_video_quality(video_df, plots_dir / "video_quality.png")
-    for name in ("length_by_date.png", "metric_distributions_by_date.png", "video_quality.png"):
+    plot_cross_modal_relations(episode_df, video_df, timing_df, plots_dir / "cross_modal_relations.png")
+    plot_issue_codes(issue_df, plots_dir / "issue_codes.png")
+    plot_issue_heatmap(issue_df, plots_dir / "issue_heatmap_by_date.png")
+    plot_issue_timeline(episode_df, issue_df, plots_dir / "issue_timeline.png")
+    for name in (
+        "bad_episode_summary.png",
+        "issue_timeline.png",
+        "issue_heatmap_by_date.png",
+        "length_by_date.png",
+        "metric_distributions_by_date.png",
+        "timing_quality.png",
+        "hand_quality.png",
+        "video_quality.png",
+        "cross_modal_relations.png",
+        "issue_codes.png",
+    ):
         if (plots_dir / name).exists():
             plot_files.append(name)
 
@@ -1404,6 +1687,7 @@ def main() -> int:
         episodes=episode_df,
         videos=video_df,
         timing=timing_df,
+        issues=issue_df,
         embeddings=reduced_embeddings,
         curves=curves,
         run_summary=run_summary,

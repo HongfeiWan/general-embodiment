@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from tools.data_chain import analyze_quality as quality
 
@@ -40,6 +41,39 @@ class AnalyzeQualityTests(unittest.TestCase):
         self.assertIn("finger_angle_mean", row)
         self.assertTrue(np.isnan(row["finger_angle_mean"]))
         self.assertEqual(row["closing_duration"], 0.0)
+
+    def test_issue_scores_surface_bad_episodes(self) -> None:
+        episodes = pd.DataFrame(
+            [
+                {
+                    "episode_index": 1,
+                    "source_date": "2026-06-24",
+                    "status": "ok",
+                    "parquet_rows": 100,
+                    "frame_count_match": True,
+                    "video_frame_count_match": True,
+                    "finite_state": True,
+                    "finite_action": True,
+                },
+                {
+                    "episode_index": 2,
+                    "source_date": "2026-06-24",
+                    "status": "ok",
+                    "parquet_rows": 100,
+                    "frame_count_match": False,
+                    "video_frame_count_match": True,
+                    "finite_state": True,
+                    "finite_action": True,
+                },
+            ]
+        )
+        issues = quality.build_issue_rows(episodes, pd.DataFrame(), pd.DataFrame())
+        scored = quality.apply_quality_scores(episodes, issues)
+        bad = scored.loc[scored["episode_index"] == 2].iloc[0]
+        good = scored.loc[scored["episode_index"] == 1].iloc[0]
+        self.assertEqual(int(bad["error_count"]), 1)
+        self.assertLess(float(bad["quality_score"]), float(good["quality_score"]))
+        self.assertIn("state_action_frame_mismatch", str(bad["issue_summary"]))
 
 
 if __name__ == "__main__":
