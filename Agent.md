@@ -84,7 +84,7 @@ python3 tools/data_chain/export_lerobot_dataset.py \
   missions/nero/mission2/raw/<YYYY-MM-DD>/<capture_session> \
   missions/nero/mission2/lerobot_v2/<YYYY-MM-DD>/<dataset_name> \
   --camera realsense_head \
-  --camera realsense_wrist \
+  --camera wrist_d405_rgb \
   --video-alias ego_view \
   --video-alias wrist_view \
   --video-feature-key observation.images.ego_view \
@@ -103,6 +103,10 @@ LeRobot task label by default, so all mission2 batches share the same
 `meta/tasks.jsonl` task. Use `--task "..."` only when an explicit override is
 needed.
 
+The wrist camera stream is recorded in raw captures as `wrist_d405_rgb`; keep
+its LeRobot alias and feature key as `wrist_view` /
+`observation.images.wrist_view`.
+
 Use `--dry-run` first when validating an unfamiliar raw session:
 
 ```bash
@@ -110,7 +114,7 @@ python3 tools/data_chain/export_lerobot_dataset.py \
   missions/nero/mission2/raw/<YYYY-MM-DD>/<capture_session> \
   missions/nero/mission2/lerobot_v2/<YYYY-MM-DD>/<dataset_name> \
   --camera realsense_head \
-  --camera realsense_wrist \
+  --camera wrist_d405_rgb \
   --video-alias ego_view \
   --video-alias wrist_view \
   --video-feature-key observation.images.ego_view \

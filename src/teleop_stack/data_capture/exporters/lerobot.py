@@ -19,6 +19,10 @@ ROKAE_LINKER_L10_SCHEMA = "rokae_xmate3_linker_l10_groot_v1"
 ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA = "rokae_xmate3_linker_l10_groot_v1_1_full_orientation"
 ROKAE_LINKER_L10_SCHEMAS = {ROKAE_LINKER_L10_SCHEMA, ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA}
 LEGACY_SCHEMA = "legacy"
+CAMERA_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "realsense_wrist": ("realsense_wrist", "wrist_d405_rgb"),
+    "wrist_d405_rgb": ("wrist_d405_rgb", "realsense_wrist"),
+}
 L10_CANONICAL_JOINT_ORDER: tuple[str, ...] = (
     "thumb_cmc_pitch",
     "thumb_cmc_yaw",
@@ -460,13 +464,20 @@ def _rokae_linker_l10_action_vector_impl(
     return VectorBundle(values=vector, names=names, slices=slices)
 
 
+def _camera_name_matches(actual_name: object, requested_name: str) -> bool:
+    if not isinstance(actual_name, str):
+        return False
+    aliases = CAMERA_NAME_ALIASES.get(requested_name, (requested_name,))
+    return actual_name in aliases
+
+
 def _select_video(videos: object, camera_name: str) -> dict[str, object] | None:
     if not isinstance(videos, list):
         return None
     for video in videos:
         if not isinstance(video, dict):
             continue
-        if str(video.get("camera_name", "")) == camera_name:
+        if _camera_name_matches(video.get("camera_name"), camera_name):
             return video
     return None
 
@@ -525,20 +536,76 @@ def _video_ordinal_maps(
             frame_index = video.get("frame_index")
             if (
                 not isinstance(camera_name, str)
-                or camera_name not in selected_cameras
                 or not isinstance(relative_path, str)
                 or not isinstance(frame_index, int)
             ):
                 continue
-            seen_key = (camera_name, relative_path, frame_index)
+            matched_camera = next((name for name in selected_cameras if _camera_name_matches(camera_name, name)), None)
+            if matched_camera is None:
+                continue
+            seen_key = (matched_camera, relative_path, frame_index)
             if seen_key in seen:
                 continue
             seen.add(seen_key)
-            grouped.setdefault((camera_name, relative_path), []).append((record_index, frame_index))
+            grouped.setdefault((matched_camera, relative_path), []).append((record_index, frame_index))
     return {
         key: {frame_index: ordinal for ordinal, (_, frame_index) in enumerate(sorted(values))}
         for key, values in grouped.items()
     }
+
+
+def _video_frame_records(
+    *,
+    frames: list[dict[str, object]],
+    video_log_records: list[dict[str, object]],
+    camera_names: tuple[str, ...],
+) -> list[dict[str, object]]:
+    frame_video_records = [
+        frame
+        for frame in frames
+        if all(_select_video(frame.get("videos"), camera_name) is not None for camera_name in camera_names)
+    ]
+    if frame_video_records:
+        return frame_video_records
+
+    by_camera: dict[str, list[dict[str, object]]] = {camera_name: [] for camera_name in camera_names}
+    for record in video_log_records:
+        camera_name = record.get("camera_name")
+        if not isinstance(camera_name, str):
+            continue
+        for requested_name in camera_names:
+            if _camera_name_matches(camera_name, requested_name):
+                by_camera[requested_name].append(record)
+                break
+    if any(not records for records in by_camera.values()):
+        return []
+
+    primary_camera = camera_names[0]
+    records: list[dict[str, object]] = []
+    for primary_record in by_camera[primary_camera]:
+        primary_ts = primary_record.get("monotonic_ts_s")
+        if not isinstance(primary_ts, (int, float)):
+            continue
+        videos: list[dict[str, object]] = []
+        timestamps = [float(primary_ts)]
+        for camera_name in camera_names:
+            camera_record, _ = _nearest_record(by_camera[camera_name], float(primary_ts))
+            if camera_record is None:
+                break
+            camera_ts = camera_record.get("monotonic_ts_s")
+            if isinstance(camera_ts, (int, float)):
+                timestamps.append(float(camera_ts))
+            videos.append(camera_record)
+        else:
+            records.append(
+                {
+                    "monotonic_ts_s": sum(timestamps) / len(timestamps),
+                    "source_ts_s": float(primary_ts),
+                    "capture_ts_s": primary_record.get("capture_ts_s"),
+                    "videos": videos,
+                }
+            )
+    return records
 
 
 def _is_same_schema(
@@ -1027,11 +1094,11 @@ class GrootLeRobotV2Exporter:
             key="robot",
             filename="robot.jsonl",
         )
-        video_records = [
-            frame
-            for frame in frames
-            if all(_select_video(frame.get("videos"), camera_name) is not None for camera_name in video_cameras)
-        ]
+        video_records = _video_frame_records(
+            frames=frames,
+            video_log_records=video_log_records,
+            camera_names=video_cameras,
+        )
         success_value = metadata.get("success")
         success = bool(success_value) if isinstance(success_value, bool) else None
         if self.config.success_only and success is not True:
