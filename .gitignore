@@ -16,3 +16,7 @@ missions/*/*/batch_quality/
 
 __pycache__/
 *.py[cod]
+
+# Local Docker build artifacts. These can be regenerated from the local conda
+# env and are too large for Git.
+docker/dataprocess/dataprocess-conda-pack.tar.gz
