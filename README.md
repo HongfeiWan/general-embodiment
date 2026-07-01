@@ -33,3 +33,6 @@ python3 tools/data_chain/analyze_quality.py --skip-video --skip-timing
 ```
 
 旧的 `analyze_smooth_*` 和 `check_lerobot_batch_quality.py` 脚本仍保留用于读取历史报告或兼容临时流程，但新的质量入口统一使用 `analyze_quality.py`。
+
+
+0 1 3 4 5 6 7 8 11 12 16 18 19 
