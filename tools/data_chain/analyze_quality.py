@@ -37,7 +37,7 @@ DEFAULT_DATASET_DIR = MISSION_DIR / "smooth"
 DEFAULT_OUTPUT_DIR = MISSION_DIR / "quality"
 DEFAULT_RAW_ROOT = MISSION_DIR / "raw"
 
-QUALITY_ANALYZER_VERSION = "quality.v3_bad_data_visibility"
+QUALITY_ANALYZER_VERSION = "quality.v4_state_action_rmse"
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 COMPACT_DATE_RE = re.compile(r"(20\d{6})")
 
@@ -46,6 +46,13 @@ ACTION_HAND_SLICE = slice(9, 19)
 STATE_ARM_SLICE = slice(0, 7)
 STATE_EEF_SLICE = slice(7, 16)
 STATE_HAND_SLICE = slice(16, 26)
+STATE_ACTION_DIM_PAIRS = tuple(
+    [(f"eef_{idx}", STATE_EEF_SLICE.start + idx, ACTION_EEF_SLICE.start + idx) for idx in range(STATE_EEF_SLICE.stop - STATE_EEF_SLICE.start)]
+    + [
+        (f"hand_{idx}", STATE_HAND_SLICE.start + idx, ACTION_HAND_SLICE.start + idx)
+        for idx in range(STATE_HAND_SLICE.stop - STATE_HAND_SLICE.start)
+    ]
+)
 LAG_SEARCH_FRAMES = 20
 DEFAULT_VIDEO_SAMPLE_FRAMES = 24
 
@@ -674,6 +681,44 @@ def compact_series(values: np.ndarray, max_points: int = 240) -> list[float]:
     return [float(v) if math.isfinite(float(v)) else math.nan for v in arr]
 
 
+def state_action_comparison(state: np.ndarray, action: np.ndarray) -> dict[str, Any]:
+    n = min(state.shape[0], action.shape[0])
+    labels: list[str] = []
+    state_series: list[list[float]] = []
+    action_series: list[list[float]] = []
+    rmse_by_dim: list[float] = []
+    finite_diffs: list[np.ndarray] = []
+    for label, state_idx, action_idx in STATE_ACTION_DIM_PAIRS:
+        if state.shape[1] <= state_idx or action.shape[1] <= action_idx or n <= 0:
+            continue
+        state_values = state[:n, state_idx]
+        action_values = action[:n, action_idx]
+        diff = state_values - action_values
+        finite = diff[np.isfinite(diff)]
+        rmse = float(np.sqrt(np.mean(np.square(finite)))) if finite.size else math.nan
+        labels.append(label)
+        state_series.append(compact_series(state_values))
+        action_series.append(compact_series(action_values))
+        rmse_by_dim.append(rmse)
+        if finite.size:
+            finite_diffs.append(finite)
+    if finite_diffs:
+        all_diffs = np.concatenate(finite_diffs)
+        overall_rmse = float(np.sqrt(np.mean(np.square(all_diffs))))
+    else:
+        overall_rmse = math.nan
+    finite_rmse = np.asarray([value for value in rmse_by_dim if math.isfinite(value)], dtype=np.float64)
+    max_dim = labels[int(np.nanargmax(rmse_by_dim))] if finite_rmse.size else ""
+    return {
+        "labels": labels,
+        "state_series": state_series,
+        "action_series": action_series,
+        "rmse_by_dim": rmse_by_dim,
+        "overall_rmse": overall_rmse,
+        "max_dim": max_dim,
+    }
+
+
 def process_episode(
     record: EpisodeRecord,
     *,
@@ -738,6 +783,11 @@ def process_episode(
             add_stats(episode_row, "action_step_l2", l2(np.diff(action, axis=0)))
         if state.shape[0] >= 2:
             add_stats(episode_row, "state_step_l2", l2(np.diff(state, axis=0)))
+        comparison = state_action_comparison(state, action)
+        episode_row["state_action_rmse"] = comparison["overall_rmse"]
+        episode_row["state_action_comparable_dims"] = len(comparison["labels"])
+        episode_row["state_action_rmse_max_dim"] = comparison["max_dim"]
+        add_stats(episode_row, "state_action_rmse_dim", np.asarray(comparison["rmse_by_dim"], dtype=np.float64))
 
         curves.update(
             {
@@ -749,6 +799,12 @@ def process_episode(
                 "eef_xyz_x": compact_series(state[:, 7] if state.shape[1] > 7 else np.asarray([])),
                 "eef_xyz_y": compact_series(state[:, 8] if state.shape[1] > 8 else np.asarray([])),
                 "eef_xyz_z": compact_series(state[:, 9] if state.shape[1] > 9 else np.asarray([])),
+                "state_action_dim_labels": comparison["labels"],
+                "state_action_state": comparison["state_series"],
+                "state_action_action": comparison["action_series"],
+                "state_action_rmse_by_dim": comparison["rmse_by_dim"],
+                "state_action_rmse": comparison["overall_rmse"],
+                "state_action_rmse_max_dim": comparison["max_dim"],
             }
         )
         timing_row = (
@@ -833,6 +889,8 @@ def plot_metric_boxplots(episodes: pd.DataFrame, out_path: Path) -> None:
     if episodes.empty:
         return
     metrics = [
+        ("state_action_rmse", "State/action RMSE"),
+        ("state_action_rmse_dim_p95", "State/action dimension RMSE p95"),
         ("action_step_l2_p95", "Action step L2 p95"),
         ("state_step_l2_p95", "State step L2 p95"),
         ("arm_joint_jerk_l2_p95", "Arm jerk p95"),
@@ -1405,6 +1463,18 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
     td.score-warn {{ background: #fff7ed; color: #9a3412; font-weight: 650; }}
     td.count-bad {{ color: #9f1239; font-weight: 700; }}
     select {{ padding: 6px 8px; min-width: 320px; }}
+    .controls {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0 12px; }}
+    .metric-pill {{ border: 1px solid #d7dde5; border-radius: 6px; padding: 6px 10px; background: #fff; font-size: 13px; }}
+    .muted {{ color: #667085; }}
+    .legend {{ display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 4px 0 10px; font-size: 13px; color: #46515f; }}
+    .swatch {{ display: inline-block; width: 28px; height: 0; border-top: 3px solid currentColor; vertical-align: middle; margin-right: 5px; }}
+    .swatch.dashed {{ border-top-style: dashed; }}
+    .state-action-columns {{ display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; align-items: start; }}
+    .dimension-column {{ display: grid; gap: 10px; }}
+    .dimension-column h3 {{ margin-bottom: 2px; }}
+    .dimension-card {{ border: 1px solid #d7dde5; border-radius: 6px; padding: 8px; background: #fff; }}
+    .dimension-card canvas {{ width: 100%; max-width: none; height: 150px; border: 0; border-radius: 0; }}
+    @media (max-width: 900px) {{ .state-action-columns {{ grid-template-columns: 1fr; }} }}
     pre {{ background: #f6f8fa; padding: 12px; overflow: auto; border-radius: 6px; }}
     .grid {{ display: grid; grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr); gap: 18px; align-items: start; }}
     canvas {{ width: 100%; max-width: 860px; height: 260px; border: 1px solid #e5e7eb; border-radius: 6px; }}
@@ -1429,6 +1499,26 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
   <div class="grid">
     <div><h3>Metrics</h3><div id="episode-metrics"></div></div>
     <div><h3>Curves</h3><canvas id="curve-canvas" width="860" height="300"></canvas></div>
+  </div>
+  <h2>State / Action Dimension Comparison</h2>
+  <div id="state-action-compare">
+    <div class="controls">
+      <span id="state-action-summary" class="metric-pill"></span>
+    </div>
+    <div class="legend">
+      <span style="color:#2563eb"><span class="swatch"></span>state</span>
+      <span style="color:#dc2626"><span class="swatch dashed"></span>action</span>
+    </div>
+    <div class="state-action-columns">
+      <div class="dimension-column">
+        <h3>EEF</h3>
+        <div id="state-action-eef"></div>
+      </div>
+      <div class="dimension-column">
+        <h3>Hand</h3>
+        <div id="state-action-hand"></div>
+      </div>
+    </div>
   </div>
   <script id="payload" type="application/json">{payload_json}</script>
   <script>
@@ -1460,6 +1550,12 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
       return '<table><thead><tr>' + cols.map(c => `<th>${{c}}</th>`).join('') + '</tr></thead><tbody>' +
         rows.map(r => '<tr class="' + (r.severity === 'error' ? 'issue-error' : (r.severity === 'warning' ? 'issue-warning' : '')) + '">' +
           cols.map(c => `<td class="${{cellClass(c, r[c])}}">${{esc(r[c])}}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+    }}
+    function formatNumber(value) {{
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '';
+      if (Math.abs(num) >= 1000 || (Math.abs(num) > 0 && Math.abs(num) < 0.001)) return num.toExponential(3);
+      return num.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
     }}
     document.getElementById('worst-episodes').innerHTML = table(payload.worst_episodes || [], ['episode_index','source_date','quality_score','issue_count','error_count','warning_count','issue_summary']);
     document.getElementById('issue-codes').innerHTML = table(payload.issue_counts || [], ['code','count']);
@@ -1502,15 +1598,88 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
         ctx.stroke();
       }});
     }}
+    function finiteNumbers(arr) {{
+      return (arr || []).map(Number).filter(v => Number.isFinite(v));
+    }}
+    function drawStateActionPanel(canvas, label, stateArr, actionArr, rmse) {{
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = '13px system-ui';
+      const finite = finiteNumbers(stateArr).concat(finiteNumbers(actionArr));
+      if (!finite.length) {{
+        ctx.fillStyle = '#667085';
+        ctx.fillText(`${{label}} | no finite values`, 12, 22);
+        return;
+      }}
+      const min = Math.min(...finite), max = Math.max(...finite), span = Math.max(1e-9, max - min);
+      const left = 42, right = 12, top = 30, bottom = 24;
+      ctx.strokeStyle = '#d7dde5'; ctx.lineWidth = 1; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, canvas.height - bottom); ctx.lineTo(canvas.width - right, canvas.height - bottom); ctx.stroke();
+      ctx.fillStyle = '#1f2933';
+      ctx.fillText(`${{label}} | RMSE=${{formatNumber(rmse)}}`, 12, 19);
+      ctx.fillStyle = '#667085';
+      ctx.font = '11px system-ui';
+      ctx.fillText(formatNumber(max), 6, top + 4);
+      ctx.fillText(formatNumber(min), 6, canvas.height - bottom);
+      function drawLine(arr, color, dash) {{
+        if (!arr || !arr.length) return;
+        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 1.7; ctx.setLineDash(dash);
+        let started = false;
+        arr.forEach((raw, i) => {{
+          const v = Number(raw);
+          if (!Number.isFinite(v)) return;
+          const x = left + i * (canvas.width - left - right) / Math.max(1, arr.length - 1);
+          const y = canvas.height - bottom - ((v - min) / span) * (canvas.height - top - bottom);
+          if (!started) {{ ctx.moveTo(x, y); started = true; }} else {{ ctx.lineTo(x, y); }}
+        }});
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }}
+      drawLine(stateArr, '#2563eb', []);
+      drawLine(actionArr, '#dc2626', [8, 6]);
+    }}
+    function appendStateActionPanel(parent, label, stateArr, actionArr, rmse) {{
+      const card = document.createElement('div');
+      card.className = 'dimension-card';
+      const canvas = document.createElement('canvas');
+      canvas.width = 560;
+      canvas.height = 180;
+      card.appendChild(canvas);
+      parent.appendChild(card);
+      drawStateActionPanel(canvas, label, stateArr, actionArr, rmse);
+    }}
+    function showStateActionComparison(curve) {{
+      const labels = (curve && curve.state_action_dim_labels) || [];
+      const rmses = ((curve && curve.state_action_rmse_by_dim) || []).map(Number);
+      const stateSeries = (curve && curve.state_action_state) || [];
+      const actionSeries = (curve && curve.state_action_action) || [];
+      const eefEl = document.getElementById('state-action-eef');
+      const handEl = document.getElementById('state-action-hand');
+      eefEl.innerHTML = '';
+      handEl.innerHTML = '';
+      const summary = document.getElementById('state-action-summary');
+      summary.textContent = labels.length
+        ? `overall RMSE=${{formatNumber(curve.state_action_rmse)}} | max dim=${{curve.state_action_rmse_max_dim || ''}}`
+        : 'No comparable state/action dimensions';
+      labels.forEach((label, i) => {{
+        const parent = label.startsWith('eef_') ? eefEl : handEl;
+        appendStateActionPanel(parent, label, stateSeries[i] || [], actionSeries[i] || [], rmses[i]);
+      }});
+      if (!eefEl.children.length) eefEl.innerHTML = '<p class="muted">No EEF dimensions.</p>';
+      if (!handEl.children.length) handEl.innerHTML = '<p class="muted">No hand dimensions.</p>';
+    }}
     function showEpisode() {{
       const id = Number(select.value);
       const ep = episodes.find(e => Number(e.episode_index) === id) || {{}};
       const episodeIssues = issuesByEpisode.get(id) || [];
-      const cols = ['episode_index','source_date','quality_score','issue_count','issue_summary','status','parquet_rows','expected_frames','frame_count_match','video_frame_count_match','timing_status','mean_dt_video_state','action_state_lag','camera_frame_jitter','finger_velocity_p95','arm_joint_jerk_l2_p95','blur_score','brightness_mean'];
+      const cols = ['episode_index','source_date','quality_score','issue_count','issue_summary','status','parquet_rows','expected_frames','frame_count_match','video_frame_count_match','state_action_rmse','state_action_rmse_dim_mean','state_action_rmse_dim_p95','state_action_rmse_dim_max','state_action_rmse_max_dim','timing_status','mean_dt_video_state','action_state_lag','camera_frame_jitter','finger_velocity_p95','arm_joint_jerk_l2_p95','blur_score','brightness_mean'];
       document.getElementById('episode-metrics').innerHTML = '<h4>Issues</h4>' + table(episodeIssues, ['severity','code','message','metric','value']) + '<h4>Metrics</h4>' + table([ep], cols) + '<pre>' + JSON.stringify(ep, null, 2) + '</pre>';
-      drawCurve(curves.get(id));
+      const curve = curves.get(id);
+      drawCurve(curve);
+      showStateActionComparison(curve);
     }}
-    select.addEventListener('change', showEpisode); if (episodes.length) showEpisode();
+    select.addEventListener('change', showEpisode);
+    if (episodes.length) showEpisode();
   </script>
 </body>
 </html>
