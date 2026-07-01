@@ -38,6 +38,11 @@ import cv2
 import numpy as np
 import pandas as pd
 
+try:
+    import altair as alt
+except ImportError:
+    alt = None
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -102,6 +107,35 @@ DEFAULT_OUTPUT_ROOT = DEFAULT_MISSION_DIR
 DEFAULT_OUTPUT_DATASET_NAME = "trimmed"
 TRIM_MANIFEST_FILENAME = "trim_manifest.jsonl"
 REQUIRED_VIDEO_KEYS = ("ego_view", "wrist_view")
+EEF9D_LABELS = (
+    "x",
+    "y",
+    "z",
+    "rot6d.r00",
+    "rot6d.r01",
+    "rot6d.r02",
+    "rot6d.r10",
+    "rot6d.r11",
+    "rot6d.r12",
+)
+ROT6D_ROW_MAJOR_SUFFIXES = ("r00", "r01", "r02", "r10", "r11", "r12")
+ROT6D_COLUMN_MAJOR_SUFFIXES = ("r00", "r10", "r20", "r01", "r11", "r21")
+ACTION_ROTATION_TO_STATE_LEFT_MATRIX = np.asarray(
+    [
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ],
+    dtype=np.float64,
+)
+ACTION_ROTATION_TO_STATE_RIGHT_MATRIX = np.asarray(
+    [
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+    ],
+    dtype=np.float64,
+)
 
 
 @dataclass(frozen=True)
@@ -496,6 +530,286 @@ def _load_episode_table(parquet_path: str) -> pd.DataFrame:
     return pd.read_parquet(parquet_path)
 
 
+def _slice_from_modality(modality: dict[str, Any], group: str, key: str) -> slice | None:
+    group_payload = modality.get(group, {})
+    if not isinstance(group_payload, dict):
+        return None
+    entry = group_payload.get(key)
+    if not isinstance(entry, dict):
+        return None
+    start = entry.get("start")
+    end = entry.get("end")
+    if not isinstance(start, int) or not isinstance(end, int) or end <= start:
+        return None
+    return slice(start, end)
+
+
+def _eef9d_slice_from_modality(modality: dict[str, Any], group: str) -> slice | None:
+    direct = _slice_from_modality(modality, group, "eef_9d")
+    if direct is not None and direct.stop - direct.start >= 9:
+        return slice(direct.start, direct.start + 9)
+
+    if group == "state":
+        pos_key = "arm_eef_pos"
+        rot_key = "arm_eef_rot6d"
+    else:
+        pos_key = "arm_eef_pos_target"
+        rot_key = "arm_eef_rot6d_target"
+    pos_slice = _slice_from_modality(modality, group, pos_key)
+    rot_slice = _slice_from_modality(modality, group, rot_key)
+    if (
+        pos_slice is not None
+        and rot_slice is not None
+        and pos_slice.stop - pos_slice.start == 3
+        and rot_slice.stop - rot_slice.start >= 6
+        and pos_slice.stop == rot_slice.start
+    ):
+        return slice(pos_slice.start, rot_slice.start + 6)
+    return None
+
+
+def _stack_vector_column(df: pd.DataFrame, column: str) -> np.ndarray:
+    if column not in df:
+        return np.zeros((0, 0), dtype=np.float64)
+    rows: list[np.ndarray] = []
+    width: int | None = None
+    for value in df[column]:
+        try:
+            arr = np.asarray(value, dtype=np.float64).reshape(-1)
+        except Exception:
+            return np.zeros((0, 0), dtype=np.float64)
+        if width is None:
+            width = int(arr.size)
+        if int(arr.size) != width:
+            return np.zeros((0, 0), dtype=np.float64)
+        rows.append(arr)
+    if not rows:
+        return np.zeros((0, 0), dtype=np.float64)
+    return np.vstack(rows)
+
+
+def _compact_indices(length: int, max_points: int) -> np.ndarray:
+    if length <= 0:
+        return np.asarray([], dtype=np.int64)
+    if max_points <= 0 or length <= max_points:
+        return np.arange(length, dtype=np.int64)
+    return np.unique(np.linspace(0, length - 1, max_points).round().astype(np.int64))
+
+
+def _rmse_1d(left: np.ndarray, right: np.ndarray) -> float | None:
+    mask = np.isfinite(left) & np.isfinite(right)
+    if not np.any(mask):
+        return None
+    diff = left[mask] - right[mask]
+    return float(np.sqrt(np.mean(diff * diff)))
+
+
+def _normalize_vectors(vectors: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return vectors / np.maximum(norms, 1e-12)
+
+
+def _rot6d_row_major_to_matrix(rot6d: np.ndarray) -> np.ndarray:
+    values = np.asarray(rot6d, dtype=np.float64).reshape(-1, 6)
+    row0 = _normalize_vectors(values[:, 0:3])
+    row1_raw = values[:, 3:6]
+    row1 = row1_raw - np.sum(row0 * row1_raw, axis=1, keepdims=True) * row0
+    row1 = _normalize_vectors(row1)
+    row2 = np.cross(row0, row1)
+    matrices = np.empty((values.shape[0], 3, 3), dtype=np.float64)
+    matrices[:, 0, :] = row0
+    matrices[:, 1, :] = row1
+    matrices[:, 2, :] = row2
+    return matrices
+
+
+def _rot6d_column_major_to_matrix(rot6d: np.ndarray) -> np.ndarray:
+    values = np.asarray(rot6d, dtype=np.float64).reshape(-1, 6)
+    col0 = _normalize_vectors(values[:, 0:3])
+    col1_raw = values[:, 3:6]
+    col1 = col1_raw - np.sum(col0 * col1_raw, axis=1, keepdims=True) * col0
+    col1 = _normalize_vectors(col1)
+    col2 = np.cross(col0, col1)
+    matrices = np.empty((values.shape[0], 3, 3), dtype=np.float64)
+    matrices[:, :, 0] = col0
+    matrices[:, :, 1] = col1
+    matrices[:, :, 2] = col2
+    return matrices
+
+
+def _matrix_to_rot6d_row_major(matrices: np.ndarray) -> np.ndarray:
+    return np.concatenate([matrices[:, 0, :], matrices[:, 1, :]], axis=1)
+
+
+def _feature_names(info: dict[str, Any] | None, column: str) -> list[str]:
+    if not isinstance(info, dict):
+        return []
+    features = info.get("features")
+    if not isinstance(features, dict):
+        return []
+    feature = features.get(column)
+    if not isinstance(feature, dict):
+        return []
+    names = feature.get("names")
+    if not isinstance(names, list):
+        return []
+    return [str(name) for name in names]
+
+
+def _rot6d_suffixes(names: list[str], rot_slice: slice | None) -> tuple[str, ...] | None:
+    if rot_slice is None or len(names) < rot_slice.stop:
+        return None
+    suffixes: list[str] = []
+    for name in names[rot_slice.start : rot_slice.start + 6]:
+        suffixes.append(str(name).rsplit(".", 1)[-1])
+    return tuple(suffixes)
+
+
+def _rot6d_storage_convention(
+    *,
+    names: list[str],
+    rot_slice: slice | None,
+    default: str,
+) -> str:
+    suffixes = _rot6d_suffixes(names, rot_slice)
+    if suffixes == ROT6D_ROW_MAJOR_SUFFIXES:
+        return "row_major"
+    if suffixes == ROT6D_COLUMN_MAJOR_SUFFIXES:
+        return "column_major"
+    return default
+
+
+def _standardize_state_eef9d(
+    state_eef: np.ndarray,
+    *,
+    convention: str,
+) -> np.ndarray:
+    standardized = np.asarray(state_eef, dtype=np.float64).copy()
+    if standardized.shape[1] < 9:
+        return standardized
+    if convention == "column_major":
+        matrices = _rot6d_column_major_to_matrix(standardized[:, 3:9])
+        standardized[:, 3:9] = _matrix_to_rot6d_row_major(matrices)
+    return standardized
+
+
+def _standardize_action_eef9d(
+    action_eef: np.ndarray,
+    *,
+    convention: str,
+    already_in_state_frame: bool,
+) -> np.ndarray:
+    standardized = np.asarray(action_eef, dtype=np.float64).copy()
+    if standardized.shape[1] < 9:
+        return standardized
+    if convention == "column_major":
+        matrices = _rot6d_column_major_to_matrix(standardized[:, 3:9])
+    else:
+        matrices = _rot6d_row_major_to_matrix(standardized[:, 3:9])
+    if not already_in_state_frame:
+        matrices = ACTION_ROTATION_TO_STATE_LEFT_MATRIX @ matrices @ ACTION_ROTATION_TO_STATE_RIGHT_MATRIX
+    standardized[:, 3:9] = _matrix_to_rot6d_row_major(matrices)
+    return standardized
+
+
+def _action_rot6d_already_in_state_frame(info: dict[str, Any] | None) -> bool:
+    if not isinstance(info, dict):
+        return False
+    teleop_stack = info.get("teleop_stack")
+    if not isinstance(teleop_stack, dict):
+        return False
+    convention = teleop_stack.get("rot6d_convention")
+    transform = teleop_stack.get("action_rot6d_frame_transform")
+    semantics = str(teleop_stack.get("arm_action_semantics") or "")
+    return (
+        convention == "row_major_first_two_rows_[r00,r01,r02,r10,r11,r12]"
+        and isinstance(transform, dict)
+        and "in_state_frame" in semantics
+    )
+
+
+def _eef9d_payload(
+    df: pd.DataFrame,
+    modality: dict[str, Any],
+    info: dict[str, Any] | None = None,
+    *,
+    max_points: int = 1200,
+) -> dict[str, Any]:
+    state_slice = _eef9d_slice_from_modality(modality, "state")
+    action_slice = _eef9d_slice_from_modality(modality, "action")
+    if state_slice is None or action_slice is None:
+        return {
+            "error": (
+                "meta/modality.json does not expose state/action eef_9d or contiguous "
+                "arm_eef_pos + arm_eef_rot6d slices."
+            )
+        }
+
+    state = _stack_vector_column(df, "observation.state")
+    action = _stack_vector_column(df, "action")
+    if state.shape[0] == 0 or action.shape[0] == 0:
+        return {"error": "Parquet is missing usable observation.state or action vectors."}
+    if state.shape[1] < state_slice.stop or action.shape[1] < action_slice.stop:
+        return {
+            "error": (
+                f"EEF 9D slices exceed vector widths: state={state.shape}, action={action.shape}, "
+                f"state_slice={state_slice}, action_slice={action_slice}."
+            )
+        }
+
+    n = min(len(df), state.shape[0], action.shape[0])
+    state_eef = state[:n, state_slice][:, :9]
+    action_eef = action[:n, action_slice][:, :9]
+    state_rot_slice = slice(state_slice.start + 3, state_slice.start + 9)
+    action_rot_slice = slice(action_slice.start + 3, action_slice.start + 9)
+    state_convention = _rot6d_storage_convention(
+        names=_feature_names(info, "observation.state"),
+        rot_slice=state_rot_slice,
+        default="row_major",
+    )
+    action_convention = _rot6d_storage_convention(
+        names=_feature_names(info, "action"),
+        rot_slice=action_rot_slice,
+        default="row_major" if _action_rot6d_already_in_state_frame(info) else "column_major",
+    )
+    action_already_in_state_frame = _action_rot6d_already_in_state_frame(info)
+    state_eef = _standardize_state_eef9d(state_eef, convention=state_convention)
+    action_eef = _standardize_action_eef9d(
+        action_eef,
+        convention=action_convention,
+        already_in_state_frame=action_already_in_state_frame,
+    )
+    timestamps = (
+        df["timestamp"].to_numpy(dtype=np.float64)[:n]
+        if "timestamp" in df
+        else np.arange(n, dtype=np.float64)
+    )
+    indices = _compact_indices(n, max_points)
+    rmse = [_rmse_1d(state_eef[:, dim], action_eef[:, dim]) for dim in range(9)]
+    return {
+        "error": None,
+        "frame": indices,
+        "timestamp": timestamps[indices],
+        "state": state_eef[indices],
+        "action": action_eef[indices],
+        "rmse": rmse,
+        "state_slice": [state_slice.start, state_slice.stop],
+        "action_slice": [action_slice.start, action_slice.stop],
+        "state_rot6d_convention": state_convention,
+        "action_rot6d_convention": action_convention,
+        "action_already_in_state_frame": action_already_in_state_frame,
+        "standardized_rot6d_convention": "row_major_first_two_rows_[r00,r01,r02,r10,r11,r12]",
+        "action_standardization": (
+            "already_in_state_frame"
+            if action_already_in_state_frame
+            else "R_state ~= L @ R_action @ R; L rows=[z,x,y], R rows=[-y,-z,x]; "
+            "rot6d=[r22,-r20,-r21,r02,-r00,-r01]"
+        ),
+        "raw_points": int(n),
+        "plotted_points": int(len(indices)),
+    }
+
+
 def _validate_existing_output_meta(source_dataset: Path, output_meta: Path) -> None:
     source_modality = _read_json(source_dataset / "meta" / "modality.json")
     output_modality = _read_json(output_meta / "modality.json")
@@ -869,6 +1183,99 @@ def _format_vector(value: Any, max_items: int = 6) -> str:
     return f"[{shown}{suffix}] shape={arr.shape}"
 
 
+def _format_optional_float(value: float | None) -> str:
+    if value is None or not np.isfinite(value):
+        return "nan"
+    if abs(value) >= 1000 or (0 < abs(value) < 0.001):
+        return f"{value:.3e}"
+    return f"{value:.5f}".rstrip("0").rstrip(".")
+
+
+def _render_eef9d_viewer(payload: dict[str, Any], *, current_frame: int) -> None:
+    error = payload.get("error")
+    if error:
+        st.warning(str(error))
+        return
+
+    frames = np.asarray(payload["frame"], dtype=np.int64)
+    timestamps = np.asarray(payload["timestamp"], dtype=np.float64)
+    state = np.asarray(payload["state"], dtype=np.float64)
+    action = np.asarray(payload["action"], dtype=np.float64)
+    rmse = payload.get("rmse", [None] * 9)
+    st.caption(
+        "State: blue solid left y-axis. Action: red dashed right y-axis. "
+        f"state_slice={payload.get('state_slice')} action_slice={payload.get('action_slice')} "
+        f"state_rot6d={payload.get('state_rot6d_convention')} "
+        f"action_rot6d={payload.get('action_rot6d_convention')} "
+        f"action_frame={payload.get('action_standardization')} "
+        f"points={payload.get('plotted_points')}/{payload.get('raw_points')}"
+    )
+
+    if alt is None:
+        st.info("Altair is not installed; falling back to Streamlit line charts without dual y axes.")
+
+    chart_cols = st.columns(3)
+    for dim, label in enumerate(EEF9D_LABELS):
+        with chart_cols[dim % 3]:
+            chart_df = pd.DataFrame(
+                {
+                    "frame": frames,
+                    "timestamp": timestamps,
+                    "state": state[:, dim],
+                    "action": action[:, dim],
+                }
+            )
+            title = f"{label} | RMSE={_format_optional_float(rmse[dim])}"
+            if alt is None:
+                st.caption(title)
+                st.line_chart(chart_df.set_index("frame")[["state", "action"]], height=180)
+                continue
+
+            base = alt.Chart(chart_df).encode(
+                x=alt.X("frame:Q", title="frame"),
+            )
+            tooltip = [
+                alt.Tooltip("frame:Q", format=".0f"),
+                alt.Tooltip("timestamp:Q", format=".3f"),
+                alt.Tooltip("state:Q", format=".5f"),
+                alt.Tooltip("action:Q", format=".5f"),
+            ]
+            state_line = base.mark_line(color="#2563eb", strokeWidth=1.8).encode(
+                y=alt.Y(
+                    "state:Q",
+                    title="state",
+                    axis=alt.Axis(titleColor="#2563eb", labelColor="#2563eb"),
+                ),
+                tooltip=tooltip,
+            )
+            action_line = base.mark_line(
+                color="#dc2626",
+                strokeDash=[8, 6],
+                strokeWidth=1.8,
+            ).encode(
+                y=alt.Y(
+                    "action:Q",
+                    title="action",
+                    axis=alt.Axis(
+                        orient="right",
+                        titleColor="#dc2626",
+                        labelColor="#dc2626",
+                    ),
+                ),
+                tooltip=tooltip,
+            )
+            current_rule = alt.Chart(pd.DataFrame({"frame": [int(current_frame)]})).mark_rule(
+                color="#111827",
+                opacity=0.55,
+            ).encode(x="frame:Q")
+            chart = (
+                alt.layer(state_line, action_line, current_rule)
+                .resolve_scale(y="independent")
+                .properties(height=170, title=title)
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+
 def main() -> None:
     args = _parse_args()
     if st is None:
@@ -989,6 +1396,14 @@ def main() -> None:
             help="Use this view as the main visual reference. Export still trims every video key.",
         )
         st.caption(f"fps={info.get('fps', 'unknown')} total_episodes={len(episodes)}")
+        eef_chart_max_points = st.slider(
+            "EEF chart max points",
+            min_value=200,
+            max_value=3000,
+            value=1200,
+            step=100,
+            help="Downsample long episodes for the EEF 9D State / Action charts.",
+        )
 
     paths_by_key = {
         key: _resolve_episode_paths(dataset_dir, int(selected_episode), key)
@@ -1098,6 +1513,13 @@ def main() -> None:
                     if key not in {"observation.state", "action"}
                 }
             )
+
+    st.divider()
+    st.subheader("EEF 9D State / Action")
+    _render_eef9d_viewer(
+        _eef9d_payload(df, modality, info, max_points=int(eef_chart_max_points)),
+        current_frame=int(st.session_state.frame_index),
+    )
 
     st.divider()
     st.subheader("Trim Range")

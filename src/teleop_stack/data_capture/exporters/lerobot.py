@@ -35,6 +35,18 @@ L10_CANONICAL_JOINT_ORDER: tuple[str, ...] = (
     "pinky_mcp_roll",
     "thumb_cmc_roll",
 )
+ROT6D_ROW_MAJOR_COMPONENT_NAMES: tuple[str, ...] = ("r00", "r01", "r02", "r10", "r11", "r12")
+ACTION_POSITION_TO_STATE_ORDER: tuple[int, int, int] = (2, 0, 1)
+ACTION_ROTATION_TO_STATE_LEFT_MATRIX: tuple[tuple[float, float, float], ...] = (
+    (0.0, 0.0, 1.0),
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+)
+ACTION_ROTATION_TO_STATE_RIGHT_MATRIX: tuple[tuple[float, float, float], ...] = (
+    (0.0, -1.0, 0.0),
+    (0.0, 0.0, -1.0),
+    (1.0, 0.0, 0.0),
+)
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -72,7 +84,7 @@ def _maybe_float_list(values: object) -> list[float]:
     return result
 
 
-def _quat_xyzw_to_rot6d(values: object) -> list[float]:
+def _quat_xyzw_to_matrix(values: object) -> list[list[float]]:
     quat = _maybe_float_list(values)
     if len(quat) != 4:
         return []
@@ -85,13 +97,62 @@ def _quat_xyzw_to_rot6d(values: object) -> list[float]:
     z /= norm
     w /= norm
 
-    r00 = 1.0 - 2.0 * (y * y + z * z)
-    r10 = 2.0 * (x * y + z * w)
-    r20 = 2.0 * (x * z - y * w)
-    r01 = 2.0 * (x * y - z * w)
-    r11 = 1.0 - 2.0 * (x * x + z * z)
-    r21 = 2.0 * (y * z + x * w)
-    return [r00, r10, r20, r01, r11, r21]
+    return [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+
+
+def _matrix_to_rot6d_row_major(matrix: list[list[float]]) -> list[float]:
+    if len(matrix) != 3 or any(len(row) != 3 for row in matrix):
+        return []
+    return [*matrix[0], *matrix[1]]
+
+
+def _matmul3(
+    left: tuple[tuple[float, float, float], ...] | list[list[float]],
+    right: tuple[tuple[float, float, float], ...] | list[list[float]],
+) -> list[list[float]]:
+    return [
+        [
+            left[row][0] * right[0][col] + left[row][1] * right[1][col] + left[row][2] * right[2][col]
+            for col in range(3)
+        ]
+        for row in range(3)
+    ]
+
+
+def _quat_xyzw_to_rot6d(values: object) -> list[float]:
+    return _matrix_to_rot6d_row_major(_quat_xyzw_to_matrix(values))
+
+
+def _action_position_xyz_to_state_frame(values: object) -> list[float]:
+    position = _maybe_float_list(values)
+    if len(position) != 3:
+        return []
+    return [position[index] for index in ACTION_POSITION_TO_STATE_ORDER]
+
+
+def _action_quat_xyzw_to_state_frame_rot6d(values: object) -> list[float]:
+    matrix = _quat_xyzw_to_matrix(values)
+    if not matrix:
+        return []
+    left_applied = _matmul3(ACTION_ROTATION_TO_STATE_LEFT_MATRIX, matrix)
+    mapped = _matmul3(left_applied, ACTION_ROTATION_TO_STATE_RIGHT_MATRIX)
+    return _matrix_to_rot6d_row_major(mapped)
 
 
 def _named_joint_values(payload: object, order: tuple[str, ...]) -> list[float]:
@@ -293,14 +354,7 @@ def _rokae_linker_l10_state_vector_impl(robot_payload: dict[str, object], *, inc
             slices=slices,
             key="arm_eef_rot6d",
             values=arm_eef_rot6d,
-            component_names=[
-                "arm_eef_rot6d.r00",
-                "arm_eef_rot6d.r10",
-                "arm_eef_rot6d.r20",
-                "arm_eef_rot6d.r01",
-                "arm_eef_rot6d.r11",
-                "arm_eef_rot6d.r21",
-            ],
+            component_names=[f"arm_eef_rot6d.{name}" for name in ROT6D_ROW_MAJOR_COMPONENT_NAMES],
         )
 
     raw_snapshot = robot_payload.get("raw_snapshot")
@@ -418,7 +472,7 @@ def _rokae_linker_l10_action_vector_impl(
     ee_target = selected.get("ee_target")
     if not isinstance(ee_target, dict):
         return VectorBundle(values=[], names=[], slices={})
-    arm_eef_pos_target = _maybe_float_list(ee_target.get("position_xyz"))
+    arm_eef_pos_target = _action_position_xyz_to_state_frame(ee_target.get("position_xyz"))
     if len(arm_eef_pos_target) != 3:
         return VectorBundle(values=[], names=[], slices={})
     _append_segment(
@@ -430,7 +484,7 @@ def _rokae_linker_l10_action_vector_impl(
         component_names=["arm_eef_pos_target.x", "arm_eef_pos_target.y", "arm_eef_pos_target.z"],
     )
     if include_rot6d:
-        arm_eef_rot6d_target = _quat_xyzw_to_rot6d(ee_target.get("quaternion_xyzw"))
+        arm_eef_rot6d_target = _action_quat_xyzw_to_state_frame_rot6d(ee_target.get("quaternion_xyzw"))
         if len(arm_eef_rot6d_target) != 6:
             return VectorBundle(values=[], names=[], slices={})
         _append_segment(
@@ -439,14 +493,7 @@ def _rokae_linker_l10_action_vector_impl(
             slices=slices,
             key="arm_eef_rot6d_target",
             values=arm_eef_rot6d_target,
-            component_names=[
-                "arm_eef_rot6d_target.r00",
-                "arm_eef_rot6d_target.r10",
-                "arm_eef_rot6d_target.r20",
-                "arm_eef_rot6d_target.r01",
-                "arm_eef_rot6d_target.r11",
-                "arm_eef_rot6d_target.r21",
-            ],
+            component_names=[f"arm_eef_rot6d_target.{name}" for name in ROT6D_ROW_MAJOR_COMPONENT_NAMES],
         )
 
     hand_joint_target = _named_joint_values(selected.get("hand_target"), L10_CANONICAL_JOINT_ORDER)
@@ -978,10 +1025,37 @@ class GrootLeRobotV2Exporter:
                 "action_dim": len(action_names),
                 "arm_frame": "rokae_base" if self.config.schema in ROKAE_LINKER_L10_SCHEMAS else None,
                 "arm_action_semantics": (
-                    "absolute_wrist_position_target" if self.config.schema == ROKAE_LINKER_L10_SCHEMA else None
+                    "absolute_wrist_position_target_in_state_frame"
+                    if self.config.schema == ROKAE_LINKER_L10_SCHEMA
+                    else None
                 )
                 or (
-                    "absolute_wrist_pose_xyz_rot6d_target"
+                    "absolute_wrist_pose_xyz_rot6d_target_in_state_frame"
+                    if self.config.schema == ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA
+                    else None
+                ),
+                "rot6d_convention": (
+                    "row_major_first_two_rows_[r00,r01,r02,r10,r11,r12]"
+                    if self.config.schema == ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA
+                    else None
+                ),
+                "action_position_frame_transform": (
+                    {
+                        "formula": "state xyz ~= action raw [z, x, y]",
+                        "value_order": ["raw_z", "raw_x", "raw_y"],
+                        "applies_to": "action arm_eef_pos_target [x,y,z]",
+                        "offset_applied": False,
+                    }
+                    if self.config.schema in ROKAE_LINKER_L10_SCHEMAS
+                    else None
+                ),
+                "action_rot6d_frame_transform": (
+                    {
+                        "formula": "R_state ~= L @ R_action @ R",
+                        "left_matrix_rows": [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                        "right_matrix_rows": [[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
+                        "rot6d_row_major_mapping": ["r22", "-r20", "-r21", "r02", "-r00", "-r01"],
+                    }
                     if self.config.schema == ROKAE_LINKER_L10_FULL_ORIENTATION_SCHEMA
                     else None
                 ),

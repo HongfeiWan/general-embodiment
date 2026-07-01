@@ -1605,38 +1605,63 @@ def write_html(output_dir: Path, payload: dict[str, Any]) -> None:
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.font = '13px system-ui';
-      const finite = finiteNumbers(stateArr).concat(finiteNumbers(actionArr));
-      if (!finite.length) {{
+      const stateFinite = finiteNumbers(stateArr);
+      const actionFinite = finiteNumbers(actionArr);
+      if (!stateFinite.length && !actionFinite.length) {{
         ctx.fillStyle = '#667085';
         ctx.fillText(`${{label}} | no finite values`, 12, 22);
         return;
       }}
-      const min = Math.min(...finite), max = Math.max(...finite), span = Math.max(1e-9, max - min);
-      const left = 42, right = 12, top = 30, bottom = 24;
+      const stateMin = stateFinite.length ? Math.min(...stateFinite) : null;
+      const stateMax = stateFinite.length ? Math.max(...stateFinite) : null;
+      const actionMin = actionFinite.length ? Math.min(...actionFinite) : null;
+      const actionMax = actionFinite.length ? Math.max(...actionFinite) : null;
+      const stateSpan = stateFinite.length ? Math.max(1e-9, stateMax - stateMin) : 1;
+      const actionSpan = actionFinite.length ? Math.max(1e-9, actionMax - actionMin) : 1;
+      const left = 50, right = 50, top = 30, bottom = 24;
+      const plotRight = canvas.width - right;
+      const plotBottom = canvas.height - bottom;
       ctx.strokeStyle = '#d7dde5'; ctx.lineWidth = 1; ctx.setLineDash([]);
-      ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, canvas.height - bottom); ctx.lineTo(canvas.width - right, canvas.height - bottom); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(left, top);
+      ctx.lineTo(left, plotBottom);
+      ctx.lineTo(plotRight, plotBottom);
+      ctx.lineTo(plotRight, top);
+      ctx.stroke();
       ctx.fillStyle = '#1f2933';
       ctx.fillText(`${{label}} | RMSE=${{formatNumber(rmse)}}`, 12, 19);
-      ctx.fillStyle = '#667085';
       ctx.font = '11px system-ui';
-      ctx.fillText(formatNumber(max), 6, top + 4);
-      ctx.fillText(formatNumber(min), 6, canvas.height - bottom);
-      function drawLine(arr, color, dash) {{
+      if (stateFinite.length) {{
+        ctx.fillStyle = '#2563eb';
+        ctx.textAlign = 'left';
+        ctx.fillText(formatNumber(stateMax), 6, top + 4);
+        ctx.fillText(formatNumber(stateMin), 6, plotBottom);
+        ctx.fillText('state', 6, top + 17);
+      }}
+      if (actionFinite.length) {{
+        ctx.fillStyle = '#dc2626';
+        ctx.textAlign = 'right';
+        ctx.fillText(formatNumber(actionMax), canvas.width - 6, top + 4);
+        ctx.fillText(formatNumber(actionMin), canvas.width - 6, plotBottom);
+        ctx.fillText('action', canvas.width - 6, top + 17);
+        ctx.textAlign = 'left';
+      }}
+      function drawLine(arr, color, dash, min, span) {{
         if (!arr || !arr.length) return;
         ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 1.7; ctx.setLineDash(dash);
         let started = false;
         arr.forEach((raw, i) => {{
           const v = Number(raw);
           if (!Number.isFinite(v)) return;
-          const x = left + i * (canvas.width - left - right) / Math.max(1, arr.length - 1);
-          const y = canvas.height - bottom - ((v - min) / span) * (canvas.height - top - bottom);
+          const x = left + i * (plotRight - left) / Math.max(1, arr.length - 1);
+          const y = plotBottom - ((v - min) / span) * (plotBottom - top);
           if (!started) {{ ctx.moveTo(x, y); started = true; }} else {{ ctx.lineTo(x, y); }}
         }});
         ctx.stroke();
         ctx.setLineDash([]);
       }}
-      drawLine(stateArr, '#2563eb', []);
-      drawLine(actionArr, '#dc2626', [8, 6]);
+      if (stateFinite.length) drawLine(stateArr, '#2563eb', [], stateMin, stateSpan);
+      if (actionFinite.length) drawLine(actionArr, '#dc2626', [8, 6], actionMin, actionSpan);
     }}
     function appendStateActionPanel(parent, label, stateArr, actionArr, rmse) {{
       const card = document.createElement('div');

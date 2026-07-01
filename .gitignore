@@ -13,7 +13,7 @@ missions/*/*/prepared_smooth_by_date/
 missions/*/*/quality/
 missions/*/*/smooth_quality/
 missions/*/*/batch_quality/
-
+incoming/*
 __pycache__/
 *.py[cod]
 
